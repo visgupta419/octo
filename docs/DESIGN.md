@@ -113,7 +113,7 @@ BM25 matches natural-language queries against code.
 3. Skip binary files; record skips in the ingest report.
 4. Hash, skip unchanged chunks, delete chunks that no longer exist, drop
    sources removed from the config. Record `ingested_commit` per source.
-5. (M5) Write compiled `context/`.
+5. (M6) Write compiled `context/`.
 
 `ctxgraph ingest` is incremental by default; `--full` rebuilds.
 
@@ -134,13 +134,13 @@ Query input: free text plus `buckets`, `sources`, `paths`, later `teams`,
 Output is markdown (sections Facts, Norms, Expertise, Knowledge; each chunk
 cites `path#Lstart-end (commit)`) or JSON with the same structure.
 
-## 10. Committed context (`context/`) — M5
+## 10. Committed context (`context/`) — M6
 
 `context/INDEX.md`, `context/services/<name>.md`, `context/norms.md`,
 `context/STATUS.md`, regenerated on ingest and committed so agents without
 MCP can read them and changes diff in PRs.
 
-## 11. Freshness — M5
+## 11. Freshness — M6
 
 Sources store `ingested_commit`; `ctxgraph status` compares against HEAD.
 Manual sources go stale after `stale_after_days` unless `ctxgraph verify`
@@ -155,16 +155,16 @@ CLI **[M1: init, ingest, query]**
 ctxgraph init [--path DIR] [--force]
 ctxgraph ingest [--full]
 ctxgraph query "<text>" [-b bucket] [-s source] [-p path-prefix] [--budget N] [--limit K] [--json]
-ctxgraph status                      # M5
-ctxgraph verify <source_id>          # M5
+ctxgraph status                      # M6
+ctxgraph verify <source_id>          # M6
 ctxgraph graph <service>             # M2
-ctxgraph eval                        # M7
+ctxgraph eval                        # M3
 ```
 
-MCP server (`ctxgraph serve`) — M6: `get_context`, `get_service`,
+MCP server (`ctxgraph serve`) — M7: `get_context`, `get_service`,
 `get_owner`, `list_stale_sources`, `search`.
 
-## 13. Evaluation — M7
+## 13. Evaluation — M3
 
 `evals/questions.yaml` with expected paths and entities per question;
 `ctxgraph eval` reports path recall@budget, entity recall, pack size and
