@@ -1,0 +1,170 @@
+"""Ingestion: resolve sources, chunk files, write the store incrementally.
+
+Chunk ids are content hashes of (source, path, text), so re-running ingest
+on an unchanged tree is a no-op and only changed chunks are rewritten.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+
+from ..config import Config
+from ..gitutil import head_commit
+from ..paths import list_repo_files, resolve_files
+from ..store.db import ChunkRecord, Database
+from ..tokens import count_tokens
+from .chunk import RawChunk
+from .loaders import loader_for, source_file_filter
+
+BINARY_SNIFF_BYTES = 8192
+
+
+def chunk_id(source_id: str, path: str, text: str) -> str:
+    h = hashlib.sha256()
+    for part in (source_id, path, text):
+        h.update(part.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()[:16]
+
+
+def text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
+@dataclass
+class SourceReport:
+    source_id: str
+    type: str
+    bucket: str
+    files: int = 0
+    added: int = 0
+    unchanged: int = 0
+    removed: int = 0
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def chunks(self) -> int:
+        return self.added + self.unchanged
+
+
+@dataclass
+class IngestReport:
+    head_commit: str | None
+    full: bool
+    sources: list[SourceReport] = field(default_factory=list)
+    removed_sources: list[str] = field(default_factory=list)
+
+    @property
+    def added(self) -> int:
+        return sum(s.added for s in self.sources)
+
+    @property
+    def removed(self) -> int:
+        return sum(s.removed for s in self.sources)
+
+    @property
+    def unchanged(self) -> int:
+        return sum(s.unchanged for s in self.sources)
+
+    @property
+    def chunks(self) -> int:
+        return sum(s.chunks for s in self.sources)
+
+
+def _read_text(path) -> tuple[str | None, str | None]:
+    """Return (text, skip_reason)."""
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return None, f"unreadable: {exc.strerror or exc}"
+    if b"\0" in data[:BINARY_SNIFF_BYTES]:
+        return None, "binary"
+    return data.decode("utf-8", errors="replace"), None
+
+
+def run_ingest(cfg: Config, db: Database, *, full: bool = False) -> IngestReport:
+    head = head_commit(cfg.repo_root)
+    report = IngestReport(head_commit=head, full=full)
+    all_files = list_repo_files(cfg.repo_root)
+    claimed: set[str] = set()
+
+    for source in cfg.sources:
+        loader = loader_for(source.type)
+        keep = source_file_filter(source)
+        sr = SourceReport(source_id=source.id, type=source.type, bucket=source.bucket)
+        files = [
+            f
+            for f in resolve_files(all_files, source.paths, cfg.exclude_for(source))
+            if f not in claimed and keep(f)
+        ]
+        claimed.update(files)
+        sr.files = len(files)
+        db.ensure_source(source.id, source.type, source.bucket, source.to_config_dict())
+
+        if full:
+            db.delete_chunks_for_source(source.id)
+            existing: set[str] = set()
+        else:
+            existing = db.chunk_ids_for_source(source.id)
+
+        seen: set[str] = set()
+        for rel in files:
+            fp = cfg.repo_root / rel
+            text, reason = _read_text(fp)
+            if text is None:
+                sr.skipped.append((rel, reason or "unknown"))
+                continue
+            mtime = fp.stat().st_mtime
+            raw: RawChunk
+            for raw in loader(source, rel, text, cfg.chunking):
+                cid = chunk_id(source.id, rel, raw.text)
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                if cid in existing:
+                    sr.unchanged += 1
+                    continue
+                meta = {"doc_type": source.type}
+                if raw.heading:
+                    meta["heading"] = raw.heading
+                meta.update(raw.meta)
+                db.insert_chunk(
+                    ChunkRecord(
+                        id=cid,
+                        source_id=source.id,
+                        path=rel,
+                        bucket=source.bucket,
+                        text=raw.text,
+                        start_line=raw.start_line,
+                        end_line=raw.end_line,
+                        commit_sha=head,
+                        file_mtime=mtime,
+                        token_count=count_tokens(raw.text),
+                        hash=text_hash(raw.text),
+                        terms=raw.terms,
+                        meta=meta,
+                    )
+                )
+                sr.added += 1
+
+        sr.removed = db.delete_chunks(existing - seen)
+        db.upsert_source(
+            source.id,
+            source.type,
+            source.bucket,
+            source.to_config_dict(),
+            head,
+            source.manual,
+            source.stale_after_days,
+        )
+        db.commit()
+        report.sources.append(sr)
+
+    configured = {s.id for s in cfg.sources}
+    for row in db.list_sources():
+        if row["id"] not in configured:
+            db.delete_source(row["id"])
+            report.removed_sources.append(row["id"])
+    db.commit()
+    return report
