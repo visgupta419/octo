@@ -83,7 +83,7 @@ chunk_meta(chunk_id FK, key, value)       -- heading, kind, language, doc_type
 entities(id PK, type, name, attrs_json)   -- M2
 edges(src_id, dst_id, kind, attrs_json)   -- M2
 mentions(chunk_id, entity_id)             -- M2
-embeddings(chunk_id PK, vector, model)    -- M3
+embeddings(chunk_id PK, vector, model)    -- M4
 chunks_fts: FTS5 over (text, path, terms), porter + unicode61, '_' kept
 ```
 
@@ -124,11 +124,11 @@ Query input: free text plus `buckets`, `sources`, `paths`, later `teams`,
 
 1. Hard filters in SQL.
 2. BM25 top-k (k=50). All terms required, fallback to any term.
-3. (M3) Embedding top-k, merged with reciprocal rank fusion.
-4. (M3) Optional rerank of the top 30.
+3. (M4) Embedding top-k, merged with reciprocal rank fusion.
+4. (M4) Optional rerank of the top 30.
 5. (M2) Graph expansion: one-hop neighbours of mentioned services/teams as
    structured facts.
-6. Dedupe by content hash (M3: near-duplicate by cosine > 0.95).
+6. Dedupe by content hash (M4: near-duplicate by cosine > 0.95).
 7. Fill the budget in rank order; 10% reserved for facts and citations.
 
 Output is markdown (sections Facts, Norms, Expertise, Knowledge; each chunk
