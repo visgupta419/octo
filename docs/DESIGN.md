@@ -171,21 +171,91 @@ MCP server (`ctxgraph serve`) — M6: `get_context`, `get_service`,
 latency, and fails CI below a threshold. Add the question set for the target
 repo before milestone 3 so retrieval changes are measured from the start.
 
-## 14. Milestones
+## 14. Lessons applied from Uber's Software Factory
+
+Uber's "Running a Software Factory Efficiently at Uber Scale" (Aug 2026)
+decomposes agent spend as users × sessions/user × turns/session ×
+requests/turn × tokens/request × price/token. A context engine moves two of
+those terms: **requests/turn** (the agent stops searching) and
+**tokens/request** (what it carries is small and cache-stable). Their
+AI Context Graph (24M nodes, 80M edges, 86 node types, 117 edge types, 30+
+systems) turned a 20-minute wrong answer into a 38-second right one. The
+ideas below are scoped to a single repo and adopted into the milestones.
+
+1. **Measure turns and tokens, not just recall.** Evals report, per
+   question, tokens-to-answer and tool calls with ctxgraph versus without it
+   (the grounded/ungrounded A/B in their Figure 10), alongside recall at
+   budget. "Cost per correct answer" is the headline number. Build the
+   question set from real work: recent PRs, on-call questions, review
+   comments on the target repo.
+2. **More node and edge types from sources the repo already has.** Uber's
+   graph gains its value from joining systems. Within one repo the free
+   systems are: git history (commits, authors, co-change edges, file churn,
+   recency), code structure (class → method, caller → callee where cheap,
+   test → code under test), platform metadata (for Salesforce: object,
+   field, flow, trigger, permission set, with edges trigger → object,
+   class → object via SOQL/DML, LWC → Apex via `@salesforce/apex` imports,
+   field → object), docs → code mentions, and ownership. Milestone 2 grows
+   the entity model to cover these, not only service/team.
+3. **Graph facts first, chunks second.** A question like "who owns X and
+   what calls it" should be answered from edges in one call, with chunks as
+   evidence. Packs lead with Facts; `get_service`/`get_owner`-style lookups
+   return facts only.
+4. **Small tool surface, compact responses.** Their 100+ tool schemas cost
+   50-70K tokens per turn before any work. ctxgraph exposes few MCP tools
+   with terse schemas, a `search` that returns refs (path, lines, score,
+   heading) rather than text, and `get_context` with a hard budget. The CLI
+   stays first-class so agents can use it from a shell without any schema in
+   context ("CLI tool resolution").
+5. **Code-mode friendly.** Expose a Python API and a batch CLI mode
+   (`ctxgraph query --batch questions.jsonl`) so an agent script can run
+   many lookups in one subprocess and return only a summary to the model.
+6. **Cache-stable output.** Prompt-cache reads cost 0.1x; packs must be
+   byte-deterministic for identical inputs (stable ordering, stable chunk
+   ids, no timestamps in the body) so repeated packs and the committed
+   `context/` files hit the prefix cache.
+7. **Visibility and anti-patterns for context, like their session
+   dashboard.** Log every query (text, filters, hits, tokens, fallback mode)
+   in a `query_log` table. `ctxgraph stats` reports: sources never
+   retrieved, stale sources that keep getting retrieved, queries that fell
+   back to any-term matching, packs that hit the budget ceiling, and the
+   largest chunks. Each is paired with a remediation (re-chunk, exclude,
+   verify, add a source).
+8. **Continuous improvement from traces.** Accept feedback
+   (`ctxgraph feedback <chunk_id> --useful/--noise`, and the same over MCP)
+   and use it to re-rank and to flag chunks to split or exclude. This is the
+   repo-scale version of their "record papercuts, auto-generate skill
+   updates".
+9. **Pareto-driven choices for any model we introduce.** Embeddings and the
+   optional reranker (milestone 3) are picked by the eval harness on cost
+   per correct answer and latency, local-first, and can be switched off.
+
+## 15. Milestones
 
 1. **Done.** Config loader, SQLite schema, markdown + code + text ingest,
    BM25 search with filters, budgeted packs, CLI `init`/`ingest`/`query`.
-2. Graph: ownership and edges ingest, entities, `get_service`, `graph`
-   command, Facts block in packs, service attribution of code chunks.
-3. Hybrid retrieval: local embeddings, RRF, rerank toggle, near-dup dedupe.
-4. Code ingest hardening: tree-sitter where the heuristic splitter is not
-   enough; Salesforce metadata XML parsed into entities (objects, fields,
-   flows) instead of text.
-5. Freshness: `status`, `verify`, stale warnings, `context/` compile, hook.
-6. MCP server, tested against Claude Code and Cursor.
-7. Evals: question set for the target repo, `eval` command, CI check.
+2. Graph: ownership and edges ingest; entities for services, teams, files,
+   classes/methods, commits and authors (from git history), and platform
+   metadata (Salesforce objects, fields, flows, triggers); edges for
+   ownership, co-change, class → object, LWC → Apex, doc → code mentions;
+   `graph` command; Facts block first in packs; `query_log` and
+   `ctxgraph stats`.
+3. Evals (pulled forward): `evals/questions.yaml` built from real work on
+   the target repo; `eval` reports recall at budget, tokens-to-answer and
+   tool calls grounded vs ungrounded; CI threshold. Deterministic pack
+   output verified by a test.
+4. Hybrid retrieval: local embeddings, RRF, rerank toggle, near-dup dedupe,
+   each admitted only if the eval harness shows a win on cost per correct
+   answer.
+5. Code ingest hardening: tree-sitter where the heuristic splitter is not
+   enough; Salesforce metadata XML parsed into entities instead of text;
+   call edges where cheap.
+6. Freshness: `status`, `verify`, stale warnings, `context/` compile, hook.
+7. MCP server with a minimal tool surface (`get_context`, `search` returning
+   refs, `get_entity`, `list_stale_sources`), batch CLI mode and Python API
+   for code-mode use, `feedback` tool; tested against Claude Code and Cursor.
 
-## 15. Integration point with memvine
+## 16. Integration point with memvine
 
 Context is organisational truth; memory is what an agent learned from tasks.
 ctxgraph never writes task-derived learnings; memvine never ingests docs or
@@ -193,7 +263,7 @@ ownership. memvine entries may reference ctxgraph chunk ids or entity ids,
 and `get_context` accepts an optional `memory_hints` list to boost chunks a
 memory points to. Nothing else couples them in v0.1.
 
-## 16. Open questions
+## 17. Open questions
 
 - Chunking for large generated or vendored code: `exclude` covers the common
   directories; add `.ctxignore` if teams need it outside the config.
