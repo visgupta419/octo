@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..retrieve.bm25 import Hit
+from ..tokens import count_tokens
 
 # A slice of the budget is held back for graph facts and citations (milestone
 # 2 fills the facts; the header and citation lines already cost tokens).
@@ -58,9 +59,22 @@ def compile_pack(
     hits: list[Hit],
     budget_tokens: int,
     reserve_ratio: float = DEFAULT_RESERVE_RATIO,
+    facts: list[str] | None = None,
+    stale_sources: list[str] | None = None,
 ) -> ContextPack:
     pack = ContextPack(query=query, budget_tokens=budget_tokens, candidates=len(hits))
-    available = max(0, budget_tokens - int(budget_tokens * reserve_ratio))
+    pack.stale_sources = list(stale_sources or [])
+    # Facts come first and never take more than 40% of the budget.
+    facts_tokens = 0
+    for line in facts or []:
+        t = count_tokens(line)
+        if facts_tokens + t > budget_tokens * 0.4:
+            break
+        pack.facts.append(line)
+        facts_tokens += t
+    reserve = max(int(budget_tokens * reserve_ratio), facts_tokens)
+    available = max(0, budget_tokens - reserve)
+    pack.used_tokens = facts_tokens
     seen_hashes: set[str] = set()
     for h in hits:
         if h.hash in seen_hashes:

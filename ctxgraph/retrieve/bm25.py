@@ -113,6 +113,26 @@ def _run(db: Database, fts_query: str, filters: QueryFilters, limit: int) -> lis
     return hits
 
 
+def bm25_search_mode(
+    db: Database,
+    text: str,
+    filters: QueryFilters | None = None,
+    limit: int = 50,
+) -> tuple[list[Hit], str]:
+    """BM25 top-k plus how it matched: "all" terms, "any" term, or "none"."""
+    filters = filters or QueryFilters()
+    terms = query_terms(text)
+    if not terms:
+        return [], "none"
+    hits = _run(db, build_fts_query(text, "and") or "", filters, limit)
+    if hits:
+        return hits, "all"
+    if len(terms) == 1:
+        return [], "none"
+    hits = _run(db, build_fts_query(text, "or") or "", filters, limit)
+    return hits, ("any" if hits else "none")
+
+
 def bm25_search(
     db: Database,
     text: str,
@@ -120,11 +140,4 @@ def bm25_search(
     limit: int = 50,
 ) -> list[Hit]:
     """BM25 top-k. Requires all terms first; falls back to any-term if empty."""
-    filters = filters or QueryFilters()
-    terms = query_terms(text)
-    if not terms:
-        return []
-    hits = _run(db, build_fts_query(text, "and") or "", filters, limit)
-    if hits or len(terms) == 1:
-        return hits
-    return _run(db, build_fts_query(text, "or") or "", filters, limit)
+    return bm25_search_mode(db, text, filters, limit)[0]

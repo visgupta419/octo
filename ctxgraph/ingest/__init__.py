@@ -144,6 +144,7 @@ def run_ingest(cfg: Config, db: Database, *, full: bool = False) -> IngestReport
                         hash=text_hash(raw.text),
                         terms=raw.terms,
                         meta=meta,
+                        repo=cfg.repo_name,
                     )
                 )
                 sr.added += 1

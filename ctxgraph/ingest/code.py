@@ -422,3 +422,52 @@ def identifier_terms(text: str, limit: int = 400) -> str:
                 if len(out) >= limit:
                     return " ".join(out)
     return " ".join(out)
+
+
+# --------------------------------------------------------------------------
+# Declarations (for the graph)
+
+@dataclass
+class Declaration:
+    kind: str
+    name: str  # simple name
+    qualified: str  # Outer.Inner.method
+    start_line: int  # 1-based
+    end_line: int
+    depth: int
+
+
+def list_declarations(lines: list[str], language: str | None) -> list[Declaration]:
+    """Every named block in the file, outermost first."""
+    if not lines:
+        return []
+    if language in BRACE_LANGUAGES:
+        masked = mask_source(lines, language)
+        roots = scan_blocks(masked)
+        _annotate(roots, lines, masked, 0)
+    elif language in PYTHON_LANGUAGES:
+        roots = _python_blocks(lines)
+    else:
+        return []
+    out: list[Declaration] = []
+
+    def walk(blocks: list[Block], prefix: str, depth: int) -> None:
+        for b in blocks:
+            if not b.name:
+                walk(b.children, prefix, depth)
+                continue
+            qualified = f"{prefix}.{b.name}" if prefix else b.name
+            out.append(
+                Declaration(
+                    kind=b.kind or "block",
+                    name=b.name,
+                    qualified=qualified,
+                    start_line=max(b.header_start, 0) + 1,
+                    end_line=b.close_line + 1,
+                    depth=depth,
+                )
+            )
+            walk(b.children, qualified, depth + 1)
+
+    walk(roots, "", 0)
+    return out

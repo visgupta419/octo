@@ -51,6 +51,29 @@ class ChunkingConfig:
 
 
 @dataclass
+class GraphConfig:
+    ownership: str = "ctx/ownership.yaml"
+    dependencies: str = "ctx/dependencies.yaml"
+    codeowners: bool = True
+    history_max_commits: int = 1000
+    cochange_min: int = 2
+    cochange_max_files: int = 30
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "GraphConfig":
+        d = d or {}
+        hist = d.get("history") or {}
+        return cls(
+            ownership=str(d.get("ownership", cls.ownership)),
+            dependencies=str(d.get("dependencies", cls.dependencies)),
+            codeowners=bool(d.get("codeowners", cls.codeowners)),
+            history_max_commits=int(hist.get("max_commits", cls.history_max_commits)),
+            cochange_min=int(hist.get("cochange_min", cls.cochange_min)),
+            cochange_max_files=int(hist.get("cochange_max_files", cls.cochange_max_files)),
+        )
+
+
+@dataclass
 class Source:
     id: str
     type: str
@@ -87,10 +110,15 @@ class Config:
     budget_tokens_default: int = 4000
     exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE))
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
+    graph: GraphConfig = field(default_factory=GraphConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def exclude_for(self, source: Source) -> list[str]:
         return source.exclude if source.exclude is not None else self.exclude
+
+    @property
+    def repo_name(self) -> str:
+        return str(self.raw.get("repo_name") or self.repo_root.name)
 
 
 def _as_str_list(value: Any, where: str) -> list[str]:
@@ -177,6 +205,7 @@ def parse_config(
         budget_tokens_default=int(data.get("budget_tokens_default", 4000)),
         exclude=list(DEFAULT_EXCLUDE) if exclude is None else _as_str_list(exclude, "exclude"),
         chunking=ChunkingConfig.from_dict(data.get("chunking")),
+        graph=GraphConfig.from_dict(data.get("graph")),
         raw=data,
     )
 
@@ -206,6 +235,15 @@ version: 1
 repo_root: .
 db_path: .ctxgraph/index.db      # local SQLite index; keep it out of git
 budget_tokens_default: 4000
+
+# Graph inputs (all optional; missing files are skipped).
+graph:
+  ownership: ctx/ownership.yaml       # teams, services and the paths they own
+  dependencies: ctx/dependencies.yaml # service -> service edges
+  codeowners: true                    # also read CODEOWNERS if present
+  history:
+    max_commits: 1000                 # git log depth for authors and co-change
+    cochange_min: 2                   # commits two files must share to be linked
 
 # Patterns excluded from every source (per-source `exclude` overrides this).
 exclude:
@@ -322,3 +360,27 @@ def render_init_template(repo_root: Path) -> str:
         out += _INIT_SALESFORCE
     out += _INIT_CODE
     return out
+
+
+OWNERSHIP_TEMPLATE = """\
+# Ownership for ctxgraph. Teams own services; services own paths.
+# Delete what you don't use; an empty file is fine.
+teams: []
+#  - name: platform
+#    oncall: "#platform-oncall"
+#    members: [alice, bob]
+
+services: []
+#  - name: account-service
+#    team: platform
+#    paths: ["force-app/main/default/classes/Account*.cls"]
+#    runbook: docs/runbooks/accounts.md
+"""
+
+DEPENDENCIES_TEMPLATE = """\
+# Service-to-service edges for ctxgraph.
+edges: []
+#  - from: account-service
+#    to: billing-service
+#    kind: rpc
+"""

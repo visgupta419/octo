@@ -14,10 +14,13 @@ and metadata sources out of the box.
 
 ## Status
 
-Milestone 1 of the [design](docs/DESIGN.md) is done: config loader, SQLite
-schema, markdown and code ingest, BM25 retrieval with filters, token-budgeted
-packs, and the `init` / `ingest` / `query` commands. Embeddings, the ownership
-graph, freshness tracking, the MCP server and evals are later milestones.
+Milestones 1 and 2 of the [design](docs/DESIGN.md) are done: config loader,
+SQLite schema, markdown and code ingest, BM25 retrieval with filters,
+token-budgeted packs with a graph-derived Facts block, the context graph
+(ownership, code structure, Salesforce metadata, git history), a query log
+with anti-pattern stats, and the `init` / `ingest` / `query` / `graph` /
+`stats` commands. Evals, embeddings, freshness tracking, compiled `context/`
+pages and the MCP server are later milestones.
 
 ## Quickstart
 
@@ -28,6 +31,9 @@ ctxgraph init               # writes ctxgraph.yaml and a self-ignoring .ctxgraph
 ctxgraph ingest             # builds .ctxgraph/index.db (incremental; --full rebuilds)
 ctxgraph query "how do we retry failed callouts" --budget 3000
 ctxgraph query "AccountService getAccounts" --bucket knowledge --json
+ctxgraph graph AccountService         # describe a class, object, service, file...
+ctxgraph graph Account -t object
+ctxgraph stats                        # context anti-patterns from the query log
 ```
 
 A pack looks like this:
@@ -36,6 +42,9 @@ A pack looks like this:
 # Context pack — "deprecated retry pattern"
 
 _2 chunks, 410 / 4000 tokens (from 7 candidates)._
+
+## Facts
+- RetryHelper — apex class, force-app/.../RetryHelper.cls#L1-80; referenced by: CalloutService, QueueJob; owner: platform; last changed 2026-09-12 by alice (14 commits); co-changes with: CalloutService.cls
 
 ## Norms
 ### [norms] CONTRIBUTING.md#L12-30 (abc1234)
@@ -46,8 +55,27 @@ Do not use the deprecated RetryHelper class ...
 ```
 
 Every chunk cites its path, line range and the commit it was indexed at.
-Sections appear in the order norms, expertise, knowledge; within a section
+Facts come first and are built from the graph, never from a model. Sections
+then appear in the order norms, expertise, knowledge; within a section
 chunks keep retrieval rank order.
+
+## The context graph
+
+`ctxgraph ingest` builds a graph next to the chunks, from things the repo
+already has:
+
+| Source | Entities | Edges |
+| --- | --- | --- |
+| Code (any supported language) | file, symbol (class, method, trigger, function) | file declares symbol, class contains method, symbol references symbol |
+| Apex and Lightning | object, field, component | trigger triggers_on object, class references object/field, component calls Apex method, component uses component |
+| Salesforce metadata XML | object, field, flow | field belongs_to object, lookup references object, flow references object, flow calls Apex |
+| `ctx/ownership.yaml`, `CODEOWNERS`, `ctx/dependencies.yaml` | team, person, service | team owns service/file, service contains file, service depends_on service, person member_of team |
+| Git history | person | person authored file, file co_changed file; files carry commit count, last change and last author |
+| Markdown chunks | | chunk mentions entity |
+
+`ctxgraph graph <name>` prints an entity's one-hop neighbourhood. `query`
+picks up to five entities named in the query or declared by the top hits and
+puts their fact lines at the top of the pack.
 
 ## Configuration
 
@@ -88,6 +116,14 @@ sources:
     type: markdown
     bucket: knowledge
     paths: ["**/*.md"]
+
+graph:                    # optional; missing files are skipped
+  ownership: ctx/ownership.yaml
+  dependencies: ctx/dependencies.yaml
+  codeowners: true
+  history:
+    max_commits: 1000
+    cochange_min: 2
 ```
 
 Rules worth knowing:
@@ -111,8 +147,13 @@ Rules worth knowing:
    All query terms are required first; if nothing matches, any term will do.
    Compound identifiers are also indexed split, so `getAccounts` matches
    "get accounts".
-3. Dedupe by content hash, then fill the token budget in rank order. Ten
-   percent of the budget is reserved for graph facts and citations.
+3. Graph facts for entities named in the query or declared by the top hits,
+   capped at 40% of the budget.
+4. Dedupe by content hash, then fill the remaining budget in rank order.
+
+Every query is logged locally; `ctxgraph stats` turns the log into findings
+(sources never retrieved, queries that matched only some terms, packs that
+hit the budget ceiling) with a remedy for each.
 
 ## Development
 
@@ -131,9 +172,12 @@ ctxgraph/
   tokens.py        token estimate (pluggable)
   ingest/          chunk.py (markdown/windowing), code.py (declarations),
                    loaders.py (type registry), __init__.py (pipeline)
+  graph/           model.py, ownership.py, symbols.py, salesforce.py,
+                   history.py, mentions.py, facts.py, __init__.py (builder)
   store/           schema.sql, db.py
   retrieve/        bm25.py, search.py
-  compile/         pack.py (budget, dedupe), render.py (markdown/json)
+  compile/         pack.py (budget, facts, dedupe), render.py (markdown/json)
+  stats.py         query-log anti-patterns
   cli.py
 docs/DESIGN.md     the v0.1 design and milestone plan
 ```

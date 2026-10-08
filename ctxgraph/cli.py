@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 import click
@@ -11,16 +13,21 @@ from .compile import compile_pack, render_markdown, to_json
 from .config import (
     BUCKETS,
     CONFIG_FILENAME,
-    render_init_template,
+    DEPENDENCIES_TEMPLATE,
+    OWNERSHIP_TEMPLATE,
     Config,
     ConfigError,
     find_config,
     load_config,
+    render_init_template,
 )
+from .graph import build_graph
+from .graph.facts import describe_json, facts_for_query
 from .ingest import run_ingest
 from .ingest.loaders import known_types
-from .retrieve import QueryFilters, search
-from .store import Database
+from .retrieve import QueryFilters, search_mode
+from .stats import compute_stats, render_stats
+from .store import Database, SchemaMismatch
 
 
 @click.group()
@@ -68,6 +75,13 @@ def init(target: Path, force: bool) -> None:
     # The state directory ignores itself so the SQLite index never gets committed.
     (state_dir / ".gitignore").write_text("*\n", encoding="utf-8")
     click.echo(f"wrote {cfg_path}")
+    ctx_dir = target / "ctx"
+    ctx_dir.mkdir(exist_ok=True)
+    for name, template in (("ownership.yaml", OWNERSHIP_TEMPLATE), ("dependencies.yaml", DEPENDENCIES_TEMPLATE)):
+        p = ctx_dir / name
+        if not p.exists():
+            p.write_text(template, encoding="utf-8")
+            click.echo(f"wrote {p}")
     if (target / "sfdx-project.json").is_file():
         click.echo("detected a Salesforce DX project: added apex, lwc-aura-vf and sf-metadata sources")
     click.echo("next: edit the sources, then run `ctxgraph ingest` and `ctxgraph query \"...\"`")
@@ -79,11 +93,14 @@ def init(target: Path, force: bool) -> None:
 def ingest(ctx: click.Context, full: bool) -> None:
     """Index the configured sources into the local store."""
     cfg = _load(ctx)
-    with Database(cfg.db_path) as db:
+    with Database(cfg.db_path, on_mismatch="rebuild") as db:
+        if db.rebuilt:
+            click.echo("index schema changed: rebuilding from scratch")
         try:
             report = run_ingest(cfg, db, full=full)
         except ConfigError as exc:
             raise click.ClickException(str(exc)) from exc
+        graph = build_graph(cfg, db)
 
     head = (report.head_commit or "no commit")[:12]
     mode = "full rebuild" if full else "incremental"
@@ -103,6 +120,25 @@ def ingest(ctx: click.Context, full: bool) -> None:
     click.echo(
         f"total: {report.chunks} chunks (+{report.added} -{report.removed} ={report.unchanged})"
     )
+    types = ", ".join(f"{k}={v}" for k, v in sorted(graph.by_type.items()))
+    click.echo(
+        f"graph: {graph.entities} entities ({types}), {graph.edges} edges, "
+        f"{graph.mentions} doc mentions, {graph.commits} commits read"
+    )
+
+
+def _open_index(cfg: Config) -> Database:
+    if not cfg.db_path.exists():
+        raise click.ClickException(f"no index at {cfg.db_path}; run `ctxgraph ingest` first")
+    try:
+        return Database(cfg.db_path)
+    except SchemaMismatch as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _join(items: list[dict], n: int = 15) -> str:
+    text = ", ".join(f"{i['name']} ({i['type']})" for i in items[:n])
+    return text + (f" (+{len(items) - n} more)" if len(items) > n else "")
 
 
 @main.command()
@@ -114,6 +150,8 @@ def ingest(ctx: click.Context, full: bool) -> None:
 @click.option("--budget", type=int, default=None, help="Token budget for the pack (default from config).")
 @click.option("--limit", type=int, default=50, show_default=True, help="Candidate chunks to retrieve before compiling.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of markdown.")
+@click.option("--no-facts", is_flag=True, help="Skip the graph Facts block.")
+@click.option("--no-log", is_flag=True, help="Do not record this query in the query log.")
 @click.pass_context
 def query(
     ctx: click.Context,
@@ -124,16 +162,72 @@ def query(
     budget: int | None,
     limit: int,
     as_json: bool,
+    no_facts: bool,
+    no_log: bool,
 ) -> None:
     """Compile a bounded context pack for a free-text query."""
     cfg = _load(ctx)
-    if not cfg.db_path.exists():
-        raise click.ClickException(f"no index at {cfg.db_path}; run `ctxgraph ingest` first")
     filters = QueryFilters(buckets=list(buckets), sources=list(sources), path_prefixes=list(paths))
-    with Database(cfg.db_path) as db:
-        hits = search(db, text, filters, limit=limit)
-    pack = compile_pack(text, hits, budget or cfg.budget_tokens_default)
+    started = time.monotonic()
+    with _open_index(cfg) as db:
+        hits, mode = search_mode(db, text, filters, limit=limit)
+        facts = [] if no_facts else facts_for_query(db, text, hits)
+        pack = compile_pack(text, hits, budget or cfg.budget_tokens_default, facts=facts)
+        if not no_log:
+            db.log_query(
+                text,
+                {"buckets": list(buckets), "sources": list(sources), "paths": list(paths)},
+                mode,
+                len(hits),
+                len(pack.chunks),
+                pack.used_tokens,
+                pack.budget_tokens,
+                pack.dropped_over_budget,
+                [h.source_id for h in hits],
+                int((time.monotonic() - started) * 1000),
+            )
     click.echo(to_json(pack) if as_json else render_markdown(pack).rstrip("\n"))
+
+
+@main.command()
+@click.argument("name")
+@click.option("-t", "--type", "type_", default=None,
+              help="Entity type: symbol, object, service, team, component, flow, field, file, person.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def graph(ctx: click.Context, name: str, type_: str | None, as_json: bool) -> None:
+    """Describe an entity (class, object, service, file, ...) and its neighbours."""
+    cfg = _load(ctx)
+    with _open_index(cfg) as db:
+        ents = db.find_entities(name, type_)
+        if not ents:
+            raise click.ClickException(
+                f"no entity named {name!r}" + (f" of type {type_}" if type_ else "")
+            )
+        described = [describe_json(db, e) for e in ents]
+    if as_json:
+        click.echo(json.dumps(described, indent=2, ensure_ascii=False))
+        return
+    for d in described:
+        click.echo(f"{d['type']}: {d['summary']}")
+        for kind, items in d["outgoing"].items():
+            click.echo(f"  -> {kind}: {_join(items)}")
+        for kind, items in d["incoming"].items():
+            click.echo(f"  <- {kind}: {_join(items)}")
+        if d["mentioned_in"]:
+            click.echo("  mentioned in: " + ", ".join(d["mentioned_in"]))
+        click.echo()
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def stats(ctx: click.Context, as_json: bool) -> None:
+    """Report context anti-patterns from the query log and the index."""
+    cfg = _load(ctx)
+    with _open_index(cfg) as db:
+        s = compute_stats(cfg, db)
+    click.echo(json.dumps(s.to_dict(), indent=2) if as_json else render_stats(s))
 
 
 if __name__ == "__main__":  # pragma: no cover

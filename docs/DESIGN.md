@@ -72,7 +72,7 @@ See README for the schema. Notable decisions:
 - The ownership and dependency sources (§8) are unchanged from the draft and
   land in milestone 2.
 
-## 7. Data model (SQLite) **[M1]**
+## 7. Data model (SQLite) **[M1, M2]**
 
 ```sql
 sources(id PK, type, bucket, config_json, ingested_commit, ingested_at,
@@ -80,9 +80,10 @@ sources(id PK, type, bucket, config_json, ingested_commit, ingested_at,
 chunks(rid INTEGER PK, id UNIQUE, source_id FK, path, bucket, text,
        start_line, end_line, commit_sha, file_mtime, token_count, hash, terms)
 chunk_meta(chunk_id FK, key, value)       -- heading, kind, language, doc_type
-entities(id PK, type, name, attrs_json)   -- M2
-edges(src_id, dst_id, kind, attrs_json)   -- M2
-mentions(chunk_id, entity_id)             -- M2
+entities(id PK, type, name, lname, repo, attrs_json)
+edges(src_id, dst_id, kind, attrs_json)
+mentions(chunk_id, entity_id)
+query_log(ts, text, filters_json, mode, candidates, pack_chunks, used_tokens, ...)
 embeddings(chunk_id PK, vector, model)    -- M4
 chunks_fts: FTS5 over (text, path, terms), porter + unicode61, '_' kept
 ```
@@ -117,7 +118,7 @@ BM25 matches natural-language queries against code.
 
 `ctxgraph ingest` is incremental by default; `--full` rebuilds.
 
-## 9. Retrieval and compilation **[M1 for steps 1, 2, 6, 7]**
+## 9. Retrieval and compilation **[M1/M2 for steps 1, 2, 5, 6, 7]**
 
 Query input: free text plus `buckets`, `sources`, `paths`, later `teams`,
 `services`, `since_commit` / `since_days`, and `budget_tokens`.
@@ -126,8 +127,9 @@ Query input: free text plus `buckets`, `sources`, `paths`, later `teams`,
 2. BM25 top-k (k=50). All terms required, fallback to any term.
 3. (M4) Embedding top-k, merged with reciprocal rank fusion.
 4. (M4) Optional rerank of the top 30.
-5. (M2) Graph expansion: one-hop neighbours of mentioned services/teams as
-   structured facts.
+5. Graph facts: up to five entities named in the query or declared by the
+   top hits, each rendered as one line from its one-hop neighbourhood,
+   capped at 40% of the budget and placed first.
 6. Dedupe by content hash (M4: near-duplicate by cosine > 0.95).
 7. Fill the budget in rank order; 10% reserved for facts and citations.
 
@@ -230,16 +232,64 @@ ideas below are scoped to a single repo and adopted into the milestones.
    optional reranker (milestone 3) are picked by the eval harness on cost
    per correct answer and latency, local-first, and can be switched off.
 
+## 14b. Lessons applied from Driver (driver.ai)
+
+Driver positions itself as a compiler for context: parse every file, resolve
+symbols, trace call chains, map dependencies, then emit symbol-complete
+documentation, architecture maps and history guides, deterministically
+("the same codebase state produces the same context"), regenerated
+incrementally when commits land, and served to agents over a handful of MCP
+tools (file documentation, architecture overview, a task brief that gathers
+context for a task). Its critique of the alternatives is the one ctxgraph
+has to answer: hand-written markdown goes stale and causes merge conflicts;
+RAG over code fragments loses the structural relationships agents need.
+
+What ctxgraph adopts, scoped to one repo:
+
+1. **Structure first, chunks as evidence.** The graph (milestone 2) is the
+   primary product: declarations, references, triggers-on, imports,
+   ownership, co-change. Retrieval over chunks remains for prose and for
+   code the graph does not model yet.
+2. **Compiled context is a build artifact, not prose someone wrote.** The
+   committed `context/` folder (milestone 6) becomes: a per-file symbol
+   page (what it declares, what it references, who references it, owners,
+   recent history), an architecture map (services, components, objects and
+   the edges between them), and a history guide (recent change clusters
+   per area from git). All of it is generated deterministically from the
+   graph with no model call, so it diffs cleanly and never drifts.
+3. **DAG-keyed regeneration.** Each compiled page records a hash of its
+   inputs (file content hashes plus neighbour entity ids). Ingest
+   regenerates a page only when that hash changes, which is the
+   single-repo version of "only the affected parts of the DAG are
+   reprocessed".
+4. **Optional synthesis pass, pluggable.** Driver's bottom-up summaries
+   (file → module → system) are useful but need a model. ctxgraph keeps a
+   hook for a model-written summary per file or module, cached by the same
+   input hash, off by default, picked by the eval harness like any other
+   model use.
+5. **Two more lookups.** `ctxgraph graph <symbol|path>` answers "describe
+   this thing" from the graph, and a task-shaped `query` (facts, relevant
+   files with their symbol pages, applicable norms) is the repo-scale
+   version of a task brief.
+6. **Registered content maps to sources.** Driver lets people and agents
+   register documents as auto-updating or static. ctxgraph's `sources`
+   with `manual: true` and `verify` are the same idea; expertise written by
+   people is tracked for staleness instead of regenerated.
+
+Where ctxgraph deliberately differs: it stays local and git-native, with
+no service, and models only what it can compute from the repo.
+
 ## 15. Milestones
 
 1. **Done.** Config loader, SQLite schema, markdown + code + text ingest,
    BM25 search with filters, budgeted packs, CLI `init`/`ingest`/`query`.
-2. Graph: ownership and edges ingest; entities for services, teams, files,
-   classes/methods, commits and authors (from git history), and platform
-   metadata (Salesforce objects, fields, flows, triggers); edges for
-   ownership, co-change, class → object, LWC → Apex, doc → code mentions;
-   `graph` command; Facts block first in packs; `query_log` and
-   `ctxgraph stats`.
+2. **Done.** Graph: ownership (`ctx/ownership.yaml`, CODEOWNERS,
+   `ctx/dependencies.yaml`); entities for services, teams, people, files,
+   symbols, Salesforce objects, fields, flows and Lightning components;
+   edges for ownership, declares/contains, references, triggers_on, calls,
+   uses, authored, co_changed and doc mentions; `graph` command; Facts
+   block first in packs; `query_log` and `ctxgraph stats`. Commits are
+   not entities (authorship and co-change edges carry what packs need).
 3. Evals (pulled forward): `evals/questions.yaml` built from real work on
    the target repo; `eval` reports recall at budget, tokens-to-answer and
    tool calls grounded vs ungrounded; CI threshold. Deterministic pack
@@ -250,7 +300,9 @@ ideas below are scoped to a single repo and adopted into the milestones.
 5. Code ingest hardening: tree-sitter where the heuristic splitter is not
    enough; Salesforce metadata XML parsed into entities instead of text;
    call edges where cheap.
-6. Freshness: `status`, `verify`, stale warnings, `context/` compile, hook.
+6. Freshness and compiled context: `status`, `verify`, stale warnings;
+   `context/` with per-file symbol pages, an architecture map and a history
+   guide, generated from the graph and regenerated by input hash; git hook.
 7. MCP server with a minimal tool surface (`get_context`, `search` returning
    refs, `get_entity`, `list_stale_sources`), batch CLI mode and Python API
    for code-mode use, `feedback` tool; tested against Claude Code and Cursor.

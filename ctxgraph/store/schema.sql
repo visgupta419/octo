@@ -1,4 +1,4 @@
--- ctxgraph SQLite schema (schema_version 1).
+-- ctxgraph SQLite schema (schema_version 2).
 -- The graph tables (entities, edges, mentions) and embeddings exist from day
 -- one so later milestones add data, not migrations.
 
@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     rid         INTEGER PRIMARY KEY,
     id          TEXT NOT NULL UNIQUE,
     source_id   TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    repo        TEXT NOT NULL DEFAULT '',
     path        TEXT NOT NULL,
     bucket      TEXT NOT NULL,
     text        TEXT NOT NULL,
@@ -50,9 +51,12 @@ CREATE TABLE IF NOT EXISTS entities (
     id         TEXT PRIMARY KEY,
     type       TEXT NOT NULL,
     name       TEXT NOT NULL,
+    lname      TEXT NOT NULL,           -- lower(name), for lookups
+    repo       TEXT NOT NULL DEFAULT '',
     attrs_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities(type, name);
+CREATE INDEX IF NOT EXISTS idx_entities_lname ON entities(lname);
 
 CREATE TABLE IF NOT EXISTS edges (
     src_id     TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
@@ -60,6 +64,23 @@ CREATE TABLE IF NOT EXISTS edges (
     kind       TEXT NOT NULL,
     attrs_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (src_id, dst_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, kind);
+
+-- One row per query served, for `ctxgraph stats` (context anti-patterns).
+CREATE TABLE IF NOT EXISTS query_log (
+    id           INTEGER PRIMARY KEY,
+    ts           TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    filters_json TEXT NOT NULL DEFAULT '{}',
+    mode         TEXT NOT NULL,          -- all | any | none
+    candidates   INTEGER NOT NULL,
+    pack_chunks  INTEGER NOT NULL,
+    used_tokens  INTEGER NOT NULL,
+    budget       INTEGER NOT NULL,
+    over_budget  INTEGER NOT NULL,
+    sources_json TEXT NOT NULL DEFAULT '[]',
+    duration_ms  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS mentions (
