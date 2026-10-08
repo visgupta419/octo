@@ -160,11 +160,11 @@ def _embedder(cfg: Config):
         return None
 
 
-def _reranker(cfg: Config):
+def _reranker(cfg: Config, enabled: bool | None = None):
     from .retrieve.rerank import make_reranker
 
     try:
-        return make_reranker(cfg.rerank)
+        return make_reranker(cfg.rerank, enabled)
     except ConfigError as exc:
         click.echo(f"warning: rerank disabled: {exc}", err=True)
         return None
@@ -179,7 +179,7 @@ def search_options(cfg: Config, retriever: str = "auto", limit: int | None = Non
         test_penalty=cfg.retrieval.test_path_penalty,
         importance_boost=cfg.retrieval.importance_boost,
         embedder=embedder,
-        reranker=_reranker(cfg) if use_rerank else None,
+        reranker=_reranker(cfg, True) if use_rerank else None,
         rerank_top_n=cfg.rerank.top_n,
         near_duplicate_cosine=cfg.retrieval.near_duplicate_cosine,
         rrf_k=cfg.retrieval.rrf_k,

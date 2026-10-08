@@ -209,9 +209,21 @@ matching files, so you get tokens-to-answer with and without the pack.
 hybrid` (and `--rerank`) on the same questions is how a retrieval change
 earns its place.
 
-On orca, the milestone-3 tuning moved path recall from 21% to 75% and
-candidate recall from 67% to 96%, at a mean pack of about 2,300 tokens
-against roughly 32,000 for the grep baseline.
+On spinnaker/orca (24 questions, 3,000-token budget, mean pack about 2,300
+tokens against roughly 32,000 for the grep baseline):
+
+| Retriever | Path recall | Entity recall | p50 latency |
+| --- | --- | --- | --- |
+| BM25 at the start of milestone 3 | 21% | 25% | |
+| BM25, tuned | 75% | 71% | 80 ms |
+| Vectors only (bge-small) | 67% | 67% | 85 ms |
+| Hybrid (default when vectors exist) | 83% | 83% | 104 ms |
+| Hybrid + cross-encoder rerank | 88% | 88% | 1.7 s |
+
+Candidate recall is 96% in every tuned row: the remaining misses are
+ranking, not retrieval. Rerank is off by default because of its latency;
+turn it on for agents that call once per task rather than per turn. The
+initial embed of orca's 7,300 chunks took 15 minutes on one CPU core.
 
 Every query is logged locally; `ctxgraph stats` turns the log into findings
 (sources never retrieved, queries that matched only some terms, packs that

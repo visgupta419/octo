@@ -159,3 +159,18 @@ def test_local_fastembed_provider_end_to_end(repo: Path):
     assert report.embedded == db.count_chunks() and emb.name == "fastembed:BAAI/bge-small-en-v1.5"
     hits = vector_search(db, emb, "which helper class must we avoid when retrying", limit=3)
     assert hits[0].path == "CONTRIBUTING.md"  # no shared keyword with "deprecated RetryHelper"
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("CTXGRAPH_TEST_LOCAL_EMBED"), reason="downloads a model; set CTXGRAPH_TEST_LOCAL_EMBED=1")
+def test_rerank_override_builds_reranker(repo: Path):
+    from ctxgraph.cli import search_options
+    from ctxgraph.retrieve.rerank import make_reranker
+
+    cfg = parse_config({**CONFIG, "embedding": {"provider": "none"}}, repo / "ctxgraph.yaml")
+    assert make_reranker(cfg.rerank) is None  # disabled in config
+    opts = search_options(cfg, "bm25", None, True)  # --rerank wins over the config
+    assert opts.reranker is not None and opts.reranker.name.startswith("fastembed:")
+    db = Database(cfg.db_path)
+    run_ingest(cfg, db)
+    r = search_detailed(db, "deprecated retry", None, opts)
+    assert r.retriever == "bm25+rerank" and r.hits[0].path == "CONTRIBUTING.md"

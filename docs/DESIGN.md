@@ -176,11 +176,28 @@ MCP server (`ctxgraph serve`) — M7: `get_context`, `get_service`,
 `ctxgraph eval` reports path recall at budget (chunks plus paths cited by
 Facts), candidate recall (retrieved at all), entity recall, pack size,
 latency, and a grep-and-read baseline for tokens-to-answer without the
-pack; `--fail-under` fails CI. Results on spinnaker/orca, 24 questions at
-3,000 tokens: path recall 21% → 75%, candidate recall 67% → 96%, entity
-recall 25% → 71% over the milestone; grep baseline 42% recall at 14x the
-tokens. The six remaining misses are ranking-within-budget cases, the
-target for milestone 4.
+pack; `--fail-under` fails CI.
+
+Results on spinnaker/orca, 24 questions at 3,000 tokens (grep baseline:
+42% recall at 14x the tokens):
+
+| Retriever | Path | Candidate | Entity | p50 |
+| --- | --- | --- | --- | --- |
+| BM25, start of M3 | 21% | 67% | 25% | |
+| BM25, tuned (M3) | 75% | 96% | 71% | 80 ms |
+| Vectors only, bge-small (M4) | 67% | 96% | 67% | 85 ms |
+| Hybrid BM25 + vectors (M4) | 83% | 96% | 83% | 104 ms |
+| Hybrid + cross-encoder rerank (M4) | 88% | 96% | 88% | 1.7 s |
+| BM25 + rerank | 71% | 96% | 71% | 1.6 s |
+
+Decisions taken from the table: hybrid is the default whenever vectors
+exist; vectors alone are not (they lose exact-identifier matches BM25
+gets); rerank is a toggle, off by default, because 1.7 s per query is
+acceptable for a once-per-task brief but not per turn. Feeding the
+reranker truncated chunks (1,500 or 800 characters) dropped recall to
+79%, so it scores full chunks. Three misses remain at the top setting,
+all ranking-within-budget on long method bodies; smaller code chunks or
+a code-tuned embedding model are the next levers.
 
 ## 14. Lessons applied from Uber's Software Factory
 

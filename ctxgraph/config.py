@@ -91,6 +91,7 @@ class RerankConfig:
     enabled: bool = False
     model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     top_n: int = 30
+    max_chars: int = 0  # 0 = score the full chunk; cutting text lost recall on orca
     cache_dir: str | None = None
 
     @classmethod
@@ -100,6 +101,7 @@ class RerankConfig:
             enabled=bool(d.get("enabled", cls.enabled)),
             model=str(d.get("model", cls.model)),
             top_n=int(d.get("top_n", cls.top_n)),
+            max_chars=int(d.get("max_chars", cls.max_chars)),
             cache_dir=d.get("cache_dir"),
         )
 
