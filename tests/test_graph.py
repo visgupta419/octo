@@ -234,6 +234,10 @@ def test_cli_graph_stats_and_rebuild(tmp_path: Path):
     assert res.exit_code == 0 and "Salesforce" in res.output
     assert (root / "ctx" / "ownership.yaml").read_text() == OWNERSHIP  # existing file untouched
     cfg = str(root / "ctxgraph.yaml")
+    import yaml
+    data = yaml.safe_load(Path(cfg).read_text())
+    data["embedding"] = {"provider": "none"}
+    Path(cfg).write_text(yaml.safe_dump(data))
     res = runner.invoke(main, ["-c", cfg, "ingest"])
     assert res.exit_code == 0, res.output
     assert "graph:" in res.output and "symbol=" in res.output

@@ -18,7 +18,10 @@ def test_init_ingest_query_roundtrip(repo: Path):
     assert res.exit_code == 0, res.output
     assert cfg.is_file()
     assert (repo / ".ctxgraph" / ".gitignore").read_text() == "*\n"
-    assert yaml.safe_load(cfg.read_text())["version"] == 1
+    data = yaml.safe_load(cfg.read_text())
+    assert data["version"] == 1 and data["embedding"]["provider"] == "local"
+    data["embedding"] = {"provider": "none"}  # keep the test offline and BM25-only
+    cfg.write_text(yaml.safe_dump(data))
 
     res = runner.invoke(main, ["init", "--path", str(repo)])
     assert res.exit_code != 0 and "already exists" in res.output

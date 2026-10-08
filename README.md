@@ -14,22 +14,23 @@ and metadata sources out of the box.
 
 ## Status
 
-Milestones 1 to 3 of the [design](docs/DESIGN.md) are done: config loader,
-SQLite schema, markdown and code ingest, BM25 retrieval with filters,
+Milestones 1 to 4 of the [design](docs/DESIGN.md) are done: config loader,
+SQLite schema, markdown and code ingest, hybrid retrieval (BM25 fused with
+local embeddings, optional cross-encoder rerank, near-duplicate dedupe),
 token-budgeted packs with a graph-derived Facts block, the context graph
 (ownership, code structure, Salesforce metadata, git history), a query log
 with anti-pattern stats, an eval harness with a grep baseline, and the
 `init` / `ingest` / `query` / `graph` / `stats` / `eval` commands.
-Embeddings, freshness tracking, compiled `context/` pages and the MCP server
-are later milestones.
+Freshness tracking, compiled `context/` pages and the MCP server are later
+milestones.
 
 ## Quickstart
 
 ```bash
-pip install -e .            # Python 3.11+, deps: click, pyyaml
+pip install -e ".[embed]"   # Python 3.11+; the embed extra adds fastembed (ONNX, CPU)
 cd /path/to/your/repo
 ctxgraph init               # writes ctxgraph.yaml and a self-ignoring .ctxgraph/
-ctxgraph ingest             # builds .ctxgraph/index.db (incremental; --full rebuilds)
+ctxgraph ingest             # builds .ctxgraph/index.db, graph and vectors (incremental)
 ctxgraph query "how do we retry failed callouts" --budget 3000
 ctxgraph query "AccountService getAccounts" --bucket knowledge --json
 ctxgraph graph AccountService         # describe a class, object, service, file...
@@ -150,12 +151,38 @@ Rules worth knowing:
    and the any-term list is fused in by reciprocal rank. Compound
    identifiers, headings and file names are also indexed split, so
    "execution launcher" finds `ExecutionLauncher.java`.
-3. Rerank: test and spec files are demoted, files whose classes the
-   codebase references heavily are boosted. Both are `retrieval:` knobs.
-4. Dedupe by content hash, cap chunks per file, fill the remaining budget in
-   rank order.
-5. Graph facts for entities named in the query or declared by the chunks
+3. Vectors, when an embedding provider is configured: cosine search over
+   the stored chunk vectors, fused with the BM25 list by reciprocal rank.
+   `--retriever bm25|hybrid|vector` picks; `auto` is hybrid when vectors
+   exist.
+4. Score adjustments on both lists: test and spec files are demoted, files
+   whose classes the codebase references heavily are boosted. Optional
+   cross-encoder rerank of the top 30 (`rerank.enabled`, or `--rerank`).
+5. Dedupe by content hash and by vector similarity (`near_duplicate_cosine`),
+   cap chunks per file, fill the remaining budget in rank order.
+6. Graph facts for entities named in the query or declared by the chunks
    that made the pack, capped at 40% of the budget and placed first.
+
+### Embeddings
+
+```yaml
+embedding:
+  provider: local                 # none | local | openai | voyage | hash
+  model: BAAI/bge-small-en-v1.5   # ~130 MB one-time download, CPU inference
+  # parallel: 4                   # worker processes for the initial embed
+rerank:
+  enabled: false                  # Xenova/ms-marco-MiniLM-L-6-v2 via fastembed
+```
+
+`local` runs on CPU through fastembed (ONNX); `openai` is any
+OpenAI-compatible `/embeddings` endpoint (set `base_url` for Ollama, LM
+Studio or vLLM and `api_key_env` for the key); `voyage` is Voyage AI's
+code-tuned models; `hash` is a deterministic feature-hashing stand-in with
+no model, used by the tests. Vectors live in the index keyed by chunk id,
+so an incremental ingest only embeds new or changed chunks, and switching
+models re-embeds everything once. Without a provider, or when the package
+is missing, everything degrades to BM25 with a warning. Expect roughly four
+chunks per second per core for the initial embed of a large repo.
 
 ## Measuring it
 
@@ -178,7 +205,9 @@ retrieval misses), entity recall, pack tokens and latency. It also runs a
 deterministic baseline, an agent that greps the query terms and reads the
 matching files, so you get tokens-to-answer with and without the pack.
 `--fail-under` makes it a CI gate; `evals/examples/spinnaker-orca.yaml` is a
-24-question set for spinnaker/orca.
+24-question set for spinnaker/orca. `--retriever bm25` versus `--retriever
+hybrid` (and `--rerank`) on the same questions is how a retrieval change
+earns its place.
 
 On orca, the milestone-3 tuning moved path recall from 21% to 75% and
 candidate recall from 67% to 96%, at a mean pack of about 2,300 tokens
@@ -219,7 +248,8 @@ ctxgraph/
   graph/           model.py, ownership.py, symbols.py, salesforce.py,
                    history.py, mentions.py, facts.py, __init__.py (builder)
   store/           schema.sql, db.py
-  retrieve/        bm25.py, fusion.py, search.py
+  retrieve/        bm25.py, embed.py (providers), vector.py, fusion.py,
+                   rerank.py, search.py (hybrid pipeline)
   evals/           question loading, runner, grep baseline, report
   compile/         pack.py (budget, facts, dedupe), render.py (markdown/json)
   stats.py         query-log anti-patterns

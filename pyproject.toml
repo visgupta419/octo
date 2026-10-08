@@ -12,9 +12,11 @@ license = { text = "MIT" }
 dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
+embed = ["fastembed>=0.4"]
 dev = ["pytest>=8"]
 
 [project.scripts]

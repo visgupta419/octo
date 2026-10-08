@@ -25,9 +25,9 @@ from .config import (
 from .evals import DEFAULT_QUESTIONS_PATH, EvalError, load_questions, render_report, run_eval
 from .graph import build_graph
 from .graph.facts import describe_json, facts_for_query
-from .ingest import run_ingest
+from .ingest import embed_chunks, run_ingest
 from .ingest.loaders import known_types
-from .retrieve import QueryFilters, search_mode
+from .retrieve import QueryFilters, SearchOptions, search_detailed
 from .stats import compute_stats, render_stats
 from .store import Database, SchemaMismatch
 
@@ -96,10 +96,12 @@ def init(target: Path, force: bool) -> None:
 
 @main.command()
 @click.option("--full", is_flag=True, help="Rebuild every source instead of ingesting incrementally.")
+@click.option("--no-embed", is_flag=True, help="Skip the embedding step even if a provider is configured.")
 @click.pass_context
-def ingest(ctx: click.Context, full: bool) -> None:
+def ingest(ctx: click.Context, full: bool, no_embed: bool) -> None:
     """Index the configured sources into the local store."""
     cfg = _load(ctx)
+    embedder = None if no_embed else _embedder(cfg)
     with Database(cfg.db_path, on_mismatch="rebuild") as db:
         if db.rebuilt:
             click.echo("index schema changed: rebuilding from scratch")
@@ -108,6 +110,7 @@ def ingest(ctx: click.Context, full: bool) -> None:
         except ConfigError as exc:
             raise click.ClickException(str(exc)) from exc
         graph = build_graph(cfg, db)
+        embed_report = embed_chunks(cfg, db, embedder) if embedder else None
 
     head = (report.head_commit or "no commit")[:12]
     mode = "full rebuild" if full else "incremental"
@@ -131,6 +134,56 @@ def ingest(ctx: click.Context, full: bool) -> None:
     click.echo(
         f"graph: {graph.entities} entities ({types}), {graph.edges} edges, "
         f"{graph.mentions} doc mentions, {graph.commits} commits read"
+    )
+    if embed_report:
+        extra = f", dropped {embed_report.dropped_other_model} from another model" if embed_report.dropped_other_model else ""
+        click.echo(
+            f"embeddings: +{embed_report.embedded} with {embed_report.model} in {embed_report.seconds}s "
+            f"({embed_report.total} total{extra})"
+        )
+    elif cfg.embedding.provider == "none":
+        click.echo("embeddings: off (set embedding.provider in ctxgraph.yaml for hybrid retrieval)")
+
+
+def _embedder(cfg: Config):
+    """The configured embedder, or None (with a warning) when it cannot be built.
+
+    A missing package or key degrades to BM25-only retrieval rather than
+    failing, so a fresh `ctxgraph init` works before any extras are installed.
+    """
+    from .retrieve.embed import make_embedder
+
+    try:
+        return make_embedder(cfg.embedding)
+    except ConfigError as exc:
+        click.echo(f"warning: embeddings disabled: {exc}", err=True)
+        return None
+
+
+def _reranker(cfg: Config):
+    from .retrieve.rerank import make_reranker
+
+    try:
+        return make_reranker(cfg.rerank)
+    except ConfigError as exc:
+        click.echo(f"warning: rerank disabled: {exc}", err=True)
+        return None
+
+
+def search_options(cfg: Config, retriever: str = "auto", limit: int | None = None, rerank: bool | None = None) -> SearchOptions:
+    """SearchOptions from config; constructs the embedder/reranker lazily."""
+    embedder = _embedder(cfg) if retriever != "bm25" and cfg.embedding.provider != "none" else None
+    use_rerank = cfg.rerank.enabled if rerank is None else rerank
+    return SearchOptions(
+        limit=limit or cfg.retrieval.candidates,
+        test_penalty=cfg.retrieval.test_path_penalty,
+        importance_boost=cfg.retrieval.importance_boost,
+        embedder=embedder,
+        reranker=_reranker(cfg) if use_rerank else None,
+        rerank_top_n=cfg.rerank.top_n,
+        near_duplicate_cosine=cfg.retrieval.near_duplicate_cosine,
+        rrf_k=cfg.retrieval.rrf_k,
+        retriever=retriever,
     )
 
 
@@ -168,6 +221,9 @@ def _join(items: list[dict], n: int = 15) -> str:
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of markdown.")
 @click.option("--no-facts", is_flag=True, help="Skip the graph Facts block.")
 @click.option("--no-log", is_flag=True, help="Do not record this query in the query log.")
+@click.option("--retriever", type=click.Choice(["auto", "bm25", "hybrid", "vector"]), default="auto",
+              show_default=True, help="auto = hybrid when embeddings exist, else BM25.")
+@click.option("--rerank/--no-rerank", default=None, help="Override rerank.enabled from the config.")
 @click.pass_context
 def query(
     ctx: click.Context,
@@ -180,17 +236,17 @@ def query(
     as_json: bool,
     no_facts: bool,
     no_log: bool,
+    retriever: str,
+    rerank: bool | None,
 ) -> None:
     """Compile a bounded context pack for a free-text query."""
     cfg = _load(ctx)
     filters = QueryFilters(buckets=list(buckets), sources=list(sources), path_prefixes=list(paths))
-    limit = limit or cfg.retrieval.candidates
+    opts = search_options(cfg, retriever, limit, rerank)
     started = time.monotonic()
     with _open_index(cfg) as db:
-        hits, mode = search_mode(
-            db, text, filters, limit=limit,
-            test_penalty=cfg.retrieval.test_path_penalty, importance_boost=cfg.retrieval.importance_boost,
-        )
+        result = search_detailed(db, text, filters, opts)
+        hits, mode = result.hits, result.mode
         pack = compile_with_facts(db, text, hits, budget or cfg.budget_tokens_default, cfg, facts=not no_facts)
         if not no_log:
             db.log_query(
@@ -260,6 +316,9 @@ if __name__ == "__main__":  # pragma: no cover
 @click.option("--tag", "tags", multiple=True, help="Run only questions with this tag (repeatable).")
 @click.option("--fail-under", type=float, default=None, help="Exit 1 when aggregate path recall is below this fraction.")
 @click.option("--no-baseline", is_flag=True, help="Skip the grep-and-read baseline.")
+@click.option("--retriever", type=click.Choice(["auto", "bm25", "hybrid", "vector"]), default="auto",
+              show_default=True, help="Compare retrievers: run once with bm25 and once with hybrid.")
+@click.option("--rerank/--no-rerank", default=None, help="Override rerank.enabled from the config.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
 @click.pass_context
 def eval_cmd(
@@ -269,6 +328,8 @@ def eval_cmd(
     tags: tuple[str, ...],
     fail_under: float | None,
     no_baseline: bool,
+    retriever: str,
+    rerank: bool | None,
     as_json: bool,
 ) -> None:
     """Score packs against evals/questions.yaml (path, candidate and entity recall)."""
@@ -279,8 +340,9 @@ def eval_cmd(
     except EvalError as exc:
         raise click.ClickException(str(exc)) from exc
     budget = budget or (int(defaults["budget_tokens"]) if defaults.get("budget_tokens") else None)
+    opts = search_options(cfg, retriever, None, rerank)
     with _open_index(cfg) as db:
-        report = run_eval(cfg, db, questions, budget_tokens=budget, baseline=not no_baseline, tags=list(tags))
+        report = run_eval(cfg, db, questions, budget_tokens=budget, baseline=not no_baseline, tags=list(tags), opts=opts)
     if not report.results:
         raise click.ClickException("no questions matched")
     click.echo(json.dumps(report.to_dict(), indent=2) if as_json else render_report(report))

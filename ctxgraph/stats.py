@@ -27,6 +27,7 @@ class Stats:
     avg_used_tokens: float = 0.0
     avg_candidates: float = 0.0
     chunks: int = 0
+    embedded: int = 0
     chunks_by_source: dict[str, int] = field(default_factory=dict)
     sources_never_retrieved: list[str] = field(default_factory=list)
     largest_chunks: list[tuple[str, int]] = field(default_factory=list)
@@ -66,6 +67,7 @@ def compute_stats(cfg: Config, db: Database) -> Stats:
         for r in db.conn.execute("SELECT source_id, COUNT(*) AS n FROM chunks GROUP BY source_id")
     }
     s.chunks = sum(s.chunks_by_source.values())
+    s.embedded = db.embedding_count()
     s.largest_chunks = [
         (f"{r['path']}#L{r['start_line']}-{r['end_line']}", r["token_count"])
         for r in db.conn.execute(
@@ -99,6 +101,10 @@ def compute_stats(cfg: Config, db: Database) -> Stats:
         s.findings.append(Finding(
             "budget_ceiling", f"{s.over_budget}/{s.queries} packs dropped candidates for budget",
             "raise budget_tokens_default or lower chunking.max_tokens so more, smaller chunks fit"))
+    if cfg.embedding.provider != "none" and s.chunks and s.embedded < s.chunks:
+        s.findings.append(Finding(
+            "embedding_gap", f"{s.chunks - s.embedded} of {s.chunks} chunks have no vector",
+            "run `ctxgraph ingest` to embed them (or set embedding.provider: none)"))
     big = [c for c in s.largest_chunks if c[1] > cfg.chunking.max_tokens * 1.5]
     if big:
         s.findings.append(Finding(
@@ -114,7 +120,7 @@ def render_stats(s: Stats) -> str:
     if s.queries:
         out.append(f"  any-term fallbacks: {s.any_term_fallbacks}   zero hits: {s.zero_hits}   over budget: {s.over_budget}")
         out.append(f"  avg candidates: {s.avg_candidates}   avg pack tokens: {s.avg_used_tokens}")
-    out.append(f"chunks: {s.chunks}")
+    out.append(f"chunks: {s.chunks}  (embedded: {s.embedded})")
     for sid, n in sorted(s.chunks_by_source.items()):
         out.append(f"  {sid}: {n}")
     if s.largest_chunks:

@@ -51,11 +51,67 @@ class ChunkingConfig:
 
 
 @dataclass
+class EmbeddingConfig:
+    provider: str = "none"  # none | local | openai | voyage | hash
+    model: str = "BAAI/bge-small-en-v1.5"
+    base_url: str | None = None  # openai-compatible endpoint
+    api_key_env: str | None = None
+    batch_size: int = 64
+    # bge-small reads 512 tokens; ~2000 chars of code covers that, and cutting
+    # earlier only saves tokenizer time (the vector is identical).
+    max_chars: int = 2000
+    parallel: int | None = None  # fastembed worker processes (None = single process)
+    cache_dir: str | None = None  # model download cache
+    dim: int | None = None  # hash provider only
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "EmbeddingConfig":
+        d = d or {}
+        provider = str(d.get("provider", cls.provider))
+        if provider not in ("none", "local", "openai", "voyage", "hash"):
+            raise ConfigError("embedding.provider must be none, local, openai, voyage or hash")
+        default_model = {
+            "local": cls.model, "openai": "text-embedding-3-small", "voyage": "voyage-code-3", "hash": "hash", "none": cls.model,
+        }[provider]
+        return cls(
+            provider=provider,
+            model=str(d.get("model", default_model)),
+            base_url=d.get("base_url"),
+            api_key_env=d.get("api_key_env"),
+            batch_size=int(d.get("batch_size", cls.batch_size)),
+            max_chars=int(d.get("max_chars", cls.max_chars)),
+            parallel=int(d["parallel"]) if d.get("parallel") else None,
+            cache_dir=d.get("cache_dir"),
+            dim=int(d["dim"]) if d.get("dim") else None,
+        )
+
+
+@dataclass
+class RerankConfig:
+    enabled: bool = False
+    model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    top_n: int = 30
+    cache_dir: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "RerankConfig":
+        d = d or {}
+        return cls(
+            enabled=bool(d.get("enabled", cls.enabled)),
+            model=str(d.get("model", cls.model)),
+            top_n=int(d.get("top_n", cls.top_n)),
+            cache_dir=d.get("cache_dir"),
+        )
+
+
+@dataclass
 class RetrievalConfig:
     candidates: int = 50  # chunks retrieved before compiling
     test_path_penalty: float = 0.5  # score multiplier for test/spec files
     max_chunks_per_file: int = 2  # per pack, so one file cannot eat the budget
     importance_boost: float = 0.15  # score *= 1 + boost * log1p(incoming references)
+    near_duplicate_cosine: float = 0.95  # drop candidates this similar to a kept one (needs vectors)
+    rrf_k: int = 60
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "RetrievalConfig":
@@ -65,6 +121,8 @@ class RetrievalConfig:
             test_path_penalty=float(d.get("test_path_penalty", cls.test_path_penalty)),
             max_chunks_per_file=int(d.get("max_chunks_per_file", cls.max_chunks_per_file)),
             importance_boost=float(d.get("importance_boost", cls.importance_boost)),
+            near_duplicate_cosine=float(d.get("near_duplicate_cosine", cls.near_duplicate_cosine)),
+            rrf_k=int(d.get("rrf_k", cls.rrf_k)),
         )
         if cfg.candidates <= 0 or not 0 < cfg.test_path_penalty <= 1 or cfg.max_chunks_per_file <= 0:
             raise ConfigError("retrieval: candidates and max_chunks_per_file must be > 0, test_path_penalty in (0, 1]")
@@ -133,6 +191,8 @@ class Config:
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    rerank: RerankConfig = field(default_factory=RerankConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def exclude_for(self, source: Source) -> list[str]:
@@ -229,6 +289,8 @@ def parse_config(
         chunking=ChunkingConfig.from_dict(data.get("chunking")),
         graph=GraphConfig.from_dict(data.get("graph")),
         retrieval=RetrievalConfig.from_dict(data.get("retrieval")),
+        embedding=EmbeddingConfig.from_dict(data.get("embedding")),
+        rerank=RerankConfig.from_dict(data.get("rerank")),
         raw=data,
     )
 
@@ -258,6 +320,18 @@ version: 1
 repo_root: .
 db_path: .ctxgraph/index.db      # local SQLite index; keep it out of git
 budget_tokens_default: 4000
+
+# Embeddings for hybrid (BM25 + vector) retrieval. `none` keeps BM25 only.
+# `local` runs bge-small on CPU via fastembed (pip install 'ctxgraph[embed]',
+# one-time ~130 MB model download); `openai` works with any OpenAI-compatible
+# endpoint (set base_url for Ollama/LM Studio/vLLM); `voyage` for Voyage AI.
+embedding:
+  provider: local
+  model: BAAI/bge-small-en-v1.5
+
+# Optional cross-encoder rerank of the top candidates (same extra as above).
+rerank:
+  enabled: false
 
 # Graph inputs (all optional; missing files are skipped).
 graph:

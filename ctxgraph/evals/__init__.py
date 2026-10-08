@@ -30,7 +30,7 @@ from ..compile import compile_pack
 from ..config import Config
 from ..graph.facts import facts_for_query
 from ..paths import GLOB_CHARS, glob_to_regex
-from ..retrieve import QueryFilters, search_mode
+from ..retrieve import QueryFilters, SearchOptions, search_detailed
 from ..retrieve.bm25 import STOPWORDS, query_terms
 from ..store.db import Database
 
@@ -98,6 +98,7 @@ class QuestionResult:
 class EvalReport:
     results: list[QuestionResult]
     budget_tokens: int
+    retriever: str = "bm25"
 
     def _mean(self, values: list[float | None]) -> float | None:
         vals = [v for v in values if v is not None]
@@ -138,6 +139,7 @@ class EvalReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "budget_tokens": self.budget_tokens,
+            "retriever": self.retriever,
             "questions": len(self.results),
             "path_recall": self.path_recall,
             "candidate_recall": self.candidate_recall,
@@ -292,20 +294,26 @@ def run_eval(
     budget_tokens: int | None = None,
     baseline: bool = True,
     tags: list[str] | None = None,
+    opts: SearchOptions | None = None,
 ) -> EvalReport:
     budget = budget_tokens or cfg.budget_tokens_default
+    opts = opts or SearchOptions(
+        limit=cfg.retrieval.candidates,
+        test_penalty=cfg.retrieval.test_path_penalty,
+        importance_boost=cfg.retrieval.importance_boost,
+        retriever="bm25",
+    )
     file_index = build_file_index(db) if baseline else {}
     results: list[QuestionResult] = []
+    retriever_used = "bm25"
     for q in questions:
         if tags and not set(tags) & set(q.tags):
             continue
         filters = QueryFilters(buckets=q.buckets, sources=q.sources, path_prefixes=q.paths)
         qbudget = q.budget_tokens or budget
         started = time.monotonic()
-        hits, mode = search_mode(
-            db, q.q, filters, limit=cfg.retrieval.candidates,
-            test_penalty=cfg.retrieval.test_path_penalty, importance_boost=cfg.retrieval.importance_boost,
-        )
+        result = search_detailed(db, q.q, filters, opts)
+        hits, mode, retriever_used = result.hits, result.mode, result.retriever
         cap = cfg.retrieval.max_chunks_per_file
         draft = compile_pack(q.q, hits, qbudget, max_chunks_per_file=cap)
         pack = compile_pack(q.q, hits, qbudget, facts=facts_for_query(db, q.q, draft.chunks), max_chunks_per_file=cap)
@@ -342,7 +350,7 @@ def run_eval(
                 baseline=grep_baseline(file_index, q.q, q.expect_paths) if baseline else None,
             )
         )
-    return EvalReport(results=results, budget_tokens=budget)
+    return EvalReport(results=results, budget_tokens=budget, retriever=retriever_used)
 
 
 def _frac(hits: int, total: int) -> str:
@@ -350,7 +358,7 @@ def _frac(hits: int, total: int) -> str:
 
 
 def render_report(report: EvalReport) -> str:
-    out = [f"# ctxgraph eval — {len(report.results)} questions, budget {report.budget_tokens} tokens", ""]
+    out = [f"# ctxgraph eval — {len(report.results)} questions, budget {report.budget_tokens} tokens, retriever {report.retriever}", ""]
     width = max((len(r.id) for r in report.results), default=4)
     out.append(f"{'id':<{width}}  paths  cands  ents   tokens    ms  mode")
     for r in report.results:

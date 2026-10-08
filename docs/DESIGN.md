@@ -118,7 +118,7 @@ BM25 matches natural-language queries against code.
 
 `ctxgraph ingest` is incremental by default; `--full` rebuilds.
 
-## 9. Retrieval and compilation **[M1-M3 for steps 1, 2, 5, 6, 7]**
+## 9. Retrieval and compilation **[M1-M4]**
 
 Query input: free text plus `buckets`, `sources`, `paths`, later `teams`,
 `services`, `since_commit` / `since_days`, and `budget_tokens`.
@@ -127,12 +127,14 @@ Query input: free text plus `buckets`, `sources`, `paths`, later `teams`,
 2. BM25 top-k (k=50) with stopwords dropped; the all-terms and any-term
    lists are fused by reciprocal rank. Test paths are demoted and files
    whose symbols are referenced heavily are boosted (`retrieval:` knobs).
-3. (M4) Embedding top-k, merged with reciprocal rank fusion.
-4. (M4) Optional rerank of the top 30.
+3. Embedding top-k (cosine over stored unit vectors, brute force; fine to
+   ~100k chunks), merged with the BM25 list by reciprocal rank fusion.
+4. Optional cross-encoder rerank of the top 30 (off by default).
 5. Graph facts: up to five entities named in the query or declared by the
    top hits, each rendered as one line from its one-hop neighbourhood,
    capped at 40% of the budget and placed first.
-6. Dedupe by content hash (M4: near-duplicate by cosine > 0.95).
+6. Dedupe by content hash and by near-duplicate cosine (0.95) when
+   vectors exist.
 7. Fill the budget in rank order; 10% reserved for facts and citations.
 
 Output is markdown (sections Facts, Norms, Expertise, Knowledge; each chunk
@@ -332,9 +334,14 @@ exercised:
    name terms, test-path demotion, importance boost, per-file cap, Facts
    derived from the compiled pack. A real agent A/B (tokens and tool calls
    with a model in the loop) remains an optional `--agent` hook for later.
-4. Hybrid retrieval: local embeddings, RRF, rerank toggle, near-dup dedupe,
-   each admitted only if the eval harness shows a win on cost per correct
-   answer.
+4. **Done.** Hybrid retrieval: embedding providers behind one interface
+   (local fastembed/ONNX bge-small by default, OpenAI-compatible endpoints,
+   Voyage, and a deterministic hash stand-in for tests), vectors stored per
+   chunk id and embedded incrementally, cosine search fused with BM25 by
+   reciprocal rank, test demotion and importance boost applied to both
+   lists, optional cross-encoder rerank, near-duplicate dedupe by cosine,
+   `--retriever` and `--rerank` on `query` and `eval` for A/B runs.
+   Measurements are in §13.
 5. Code ingest hardening: tree-sitter where the heuristic splitter is not
    enough; Salesforce metadata XML parsed into entities instead of text;
    call edges where cheap.

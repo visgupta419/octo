@@ -227,6 +227,7 @@ class Database:
         ids = list(ids)
         if not ids:
             return 0
+        self._vec_cache = None
         total = 0
         for i in range(0, len(ids), 500):
             batch = ids[i : i + 500]
@@ -237,6 +238,7 @@ class Database:
         return total
 
     def delete_chunks_for_source(self, source_id: str) -> int:
+        self._vec_cache = None
         cur = self.conn.execute("DELETE FROM chunks WHERE source_id = ?", (source_id,))
         return cur.rowcount
 
@@ -420,6 +422,63 @@ class Database:
         edges = int(self.conn.execute("SELECT COUNT(*) AS n FROM edges").fetchone()["n"])
         mentions = int(self.conn.execute("SELECT COUNT(*) AS n FROM mentions").fetchone()["n"])
         return {"entities": sum(ents.values()), "edges": edges, "mentions": mentions, **{f"entity:{k}": v for k, v in ents.items()}}
+
+    # -- embeddings --------------------------------------------------------
+
+    def chunks_missing_embeddings(self, model: str) -> list[tuple[str, str]]:
+        rows = self.conn.execute(
+            """
+            SELECT c.id, c.text FROM chunks c
+            LEFT JOIN embeddings e ON e.chunk_id = c.id AND e.model = ?
+            WHERE e.chunk_id IS NULL ORDER BY c.path, c.start_line
+            """,
+            (model,),
+        )
+        return [(r["id"], r["text"]) for r in rows]
+
+    def upsert_embeddings(self, rows: Iterable[tuple[str, bytes, str]]) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO embeddings(chunk_id, vector, model) VALUES (?, ?, ?)
+            ON CONFLICT(chunk_id) DO UPDATE SET vector = excluded.vector, model = excluded.model
+            """,
+            list(rows),
+        )
+        self._vec_cache = None
+
+    def delete_embeddings_except(self, model: str) -> int:
+        cur = self.conn.execute("DELETE FROM embeddings WHERE model != ?", (model,))
+        self._vec_cache = None
+        return cur.rowcount
+
+    def embedding_count(self, model: str | None = None) -> int:
+        if model is None:
+            row = self.conn.execute("SELECT COUNT(*) AS n FROM embeddings").fetchone()
+        else:
+            row = self.conn.execute("SELECT COUNT(*) AS n FROM embeddings WHERE model = ?", (model,)).fetchone()
+        return int(row["n"])
+
+    def load_vectors(self, model: str):
+        """(chunk ids, float32 matrix with unit rows) for ``model``; cached."""
+        import numpy as np
+
+        cached = getattr(self, "_vec_cache", None)
+        if cached is not None and cached[0] == model:
+            return cached[1], cached[2]
+        ids: list[str] = []
+        blobs: list[bytes] = []
+        for r in self.conn.execute("SELECT chunk_id, vector FROM embeddings WHERE model = ? ORDER BY chunk_id", (model,)):
+            ids.append(r["chunk_id"])
+            blobs.append(r["vector"])
+        if not ids:
+            matrix = np.zeros((0, 0), dtype=np.float32)
+        else:
+            matrix = np.vstack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            matrix = matrix / norms
+        self._vec_cache = (model, ids, matrix)
+        return ids, matrix
 
     # -- query log ---------------------------------------------------------
 

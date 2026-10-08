@@ -83,6 +83,38 @@ def _read_text(path) -> tuple[str | None, str | None]:
     return data.decode("utf-8", errors="replace"), None
 
 
+@dataclass
+class EmbedReport:
+    model: str
+    embedded: int
+    total: int
+    seconds: float
+    dropped_other_model: int = 0
+
+
+def embed_chunks(cfg: Config, db: Database, embedder, *, batch_size: int | None = None) -> EmbedReport:
+    """Embed chunks that have no vector for ``embedder.name`` (incremental)."""
+    import time
+
+    from ..retrieve.embed import to_blob
+
+    started = time.monotonic()
+    dropped = db.delete_embeddings_except(embedder.name)
+    pending = db.chunks_missing_embeddings(embedder.name)
+    size = batch_size or cfg.embedding.batch_size
+    done = 0
+    for i in range(0, len(pending), size):
+        batch = pending[i : i + size]
+        vectors = embedder.embed([text[: cfg.embedding.max_chars] for _, text in batch])
+        db.upsert_embeddings((cid, to_blob(v), embedder.name) for (cid, _), v in zip(batch, vectors))
+        db.commit()
+        done += len(batch)
+    return EmbedReport(
+        model=embedder.name, embedded=done, total=db.embedding_count(embedder.name),
+        seconds=round(time.monotonic() - started, 1), dropped_other_model=dropped,
+    )
+
+
 def run_ingest(cfg: Config, db: Database, *, full: bool = False) -> IngestReport:
     head = head_commit(cfg.repo_root)
     report = IngestReport(head_commit=head, full=full)

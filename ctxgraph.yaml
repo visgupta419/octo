@@ -1,21 +1,26 @@
-# ctxgraph indexing itself. Run `ctxgraph ingest` then `ctxgraph query "..."`.
 version: 1
 repo_root: .
 db_path: .ctxgraph/index.db
 budget_tokens_default: 4000
-
 sources:
-  - id: design
-    type: markdown
-    bucket: expertise
-    paths: ["docs/DESIGN.md"]
-
-  - id: docs
-    type: markdown
-    bucket: knowledge
-    paths: ["**/*.md"]
-
-  - id: code
-    type: code
-    bucket: knowledge
-    paths: ["ctxgraph/**/*.py", "tests/**/*.py"]
+- id: design
+  type: markdown
+  bucket: expertise
+  paths:
+  - docs/DESIGN.md
+- id: docs
+  type: markdown
+  bucket: knowledge
+  paths:
+  - '**/*.md'
+- id: code
+  type: code
+  bucket: knowledge
+  paths:
+  - ctxgraph/**/*.py
+  - tests/**/*.py
+embedding:
+  provider: local
+  model: BAAI/bge-small-en-v1.5
+rerank:
+  enabled: false

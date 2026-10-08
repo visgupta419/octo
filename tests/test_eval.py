@@ -76,10 +76,20 @@ def test_run_eval_scores_and_baseline(config: Config, db: Database):
     assert [r.id for r in only.results] == ["retry"] and only.results[0].baseline is None
 
 
+def _offline(repo: Path) -> str:
+    import yaml
+
+    p = repo / "ctxgraph.yaml"
+    data = yaml.safe_load(p.read_text())
+    data["embedding"] = {"provider": "none"}
+    p.write_text(yaml.safe_dump(data))
+    return str(p)
+
+
 def test_eval_cli_fail_under_and_template(repo: Path):
     runner = CliRunner()
     assert runner.invoke(main, ["init", "--path", str(repo)]).exit_code == 0
-    cfg = str(repo / "ctxgraph.yaml")
+    cfg = _offline(repo)
     template = repo / "evals" / "questions.yaml"
     assert template.is_file() and "questions: []" in template.read_text()
     assert runner.invoke(main, ["-c", cfg, "ingest"]).exit_code == 0
@@ -100,7 +110,7 @@ def test_eval_cli_fail_under_and_template(repo: Path):
 def test_query_output_is_deterministic(repo: Path):
     runner = CliRunner()
     runner.invoke(main, ["init", "--path", str(repo)])
-    cfg = str(repo / "ctxgraph.yaml")
+    cfg = _offline(repo)
     runner.invoke(main, ["-c", cfg, "ingest"])
     a = runner.invoke(main, ["-c", cfg, "query", "retry sqlite service", "--budget", "2000"]).output
     b = runner.invoke(main, ["-c", cfg, "query", "retry sqlite service", "--budget", "2000"]).output
