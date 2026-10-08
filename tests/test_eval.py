@@ -21,6 +21,7 @@ QUESTIONS = {
         {"id": "sqlite", "q": "why sqlite with fts5", "expect_paths": ["**/adr/*.md"], "expect_entities": ["nothing-here"]},
         {"id": "miss", "q": "kubernetes ingress annotations", "expect_paths": ["docs/missing.md"]},
         {"id": "svc", "q": "ad_decision service owner", "expect_paths": ["ad-decision.md"]},
+        {"id": "any", "q": "deprecated retry pattern", "expect_any_paths": ["nope.md", "CONTRIBUTING.md"]},
     ],
 }
 
@@ -46,6 +47,8 @@ def test_parse_questions_validation():
         parse_questions({"questions": []})
     with pytest.raises(EvalError):
         parse_questions({"questions": [{"q": "x"}]})  # no expectations
+    _, any_q = parse_questions({"questions": [{"id": "a", "q": "x", "expect_any_paths": ["A.java", "B.java"]}]})
+    assert any_q[0].expect_any_paths == ["A.java", "B.java"] and any_q[0].expect_paths == []
     with pytest.raises(EvalError):
         parse_questions({"questions": [{"id": "a", "q": "x", "expect_paths": "p"}, {"id": "a", "q": "y", "expect_paths": "p"}]})
     defaults, qs = parse_questions(QUESTIONS)
@@ -62,15 +65,16 @@ def test_run_eval_scores_and_baseline(config: Config, db: Database):
     assert by_id["sqlite"].path_recall == 1.0 and by_id["sqlite"].entity_recall == 0.0
     assert by_id["miss"].path_recall == 0.0
     assert by_id["svc"].path_recall == 1.0
-    assert report.path_recall == 0.75
+    assert by_id["any"].path_recall == 1.0 and by_id["any"].path_total == 1
+    assert report.path_recall == 0.8
     assert all(r.baseline is not None for r in report.results)
     assert by_id["retry"].baseline.path_hits == 1 and by_id["retry"].baseline.tokens > 0
     assert report.baseline_mean_tokens is not None
     text = render_report(report)
-    assert "aggregate: path recall 75%" in text and "misses:" in text and "miss:" in text
+    assert "aggregate: path recall 80%" in text and "misses:" in text and "miss:" in text
     assert "baseline" in text
     d = report.to_dict()
-    assert d["questions"] == 4 and d["results"][0]["path_recall"] == 1.0
+    assert d["questions"] == 5 and d["results"][0]["path_recall"] == 1.0
 
     only = run_eval(config, db, qs, budget_tokens=2000, baseline=False, tags=["norms"])
     assert [r.id for r in only.results] == ["retry"] and only.results[0].baseline is None
@@ -100,11 +104,11 @@ def test_eval_cli_fail_under_and_template(repo: Path):
     template.write_text(yaml.safe_dump(QUESTIONS))
     res = runner.invoke(main, ["-c", cfg, "eval", "--fail-under", "0.9"])
     assert res.exit_code == 1, res.output
-    assert "path recall 75%" in res.output
+    assert "path recall 80%" in res.output
     res = runner.invoke(main, ["-c", cfg, "eval", "--fail-under", "0.5", "--json", "--no-baseline"])
     assert res.exit_code == 0, res.output
     import json
-    assert json.loads(res.output)["path_recall"] == 0.75
+    assert json.loads(res.output)["path_recall"] == 0.8
 
 
 def test_query_output_is_deterministic(repo: Path):

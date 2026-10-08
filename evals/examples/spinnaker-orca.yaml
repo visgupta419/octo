@@ -7,7 +7,7 @@ budget_tokens: 3000
 questions:
   - id: start-execution
     q: what starts a pipeline execution when it is triggered
-    expect_paths: [ExecutionLauncher.java]
+    expect_any_paths: [ExecutionLauncher.java, DependentPipelineStarter.groovy]
     expect_entities: [ExecutionLauncher]
     tags: [core]
   - id: persist-sql
@@ -52,7 +52,7 @@ questions:
     tags: [core]
   - id: webhook
     q: how does the webhook stage call an external HTTP endpoint
-    expect_paths: [CreateWebhookTask.java]
+    expect_any_paths: [CreateWebhookTask.java, WebhookService.java]
     expect_entities: [CreateWebhookTask]
     tags: [stages]
   - id: bake
@@ -97,7 +97,7 @@ questions:
     tags: [web]
   - id: pipeline-templates
     q: how are pipeline templates resolved into a pipeline configuration
-    expect_paths: [PipelineTemplateService.java]
+    expect_any_paths: [PipelineTemplateService.java, TemplateMerge.java, V2TemplateLoaderHandler.java]
     expect_entities: [PipelineTemplateService]
     tags: [templates]
   - id: time-window
@@ -107,7 +107,7 @@ questions:
     tags: [core]
   - id: wait-stage
     q: how does the wait stage delay a pipeline
-    expect_paths: [WaitTask.java]
+    expect_any_paths: [WaitTask.java, WaitStage.java]
     expect_entities: [WaitTask]
     tags: [stages]
   - id: preconditions

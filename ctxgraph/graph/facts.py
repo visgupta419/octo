@@ -8,7 +8,10 @@ from typing import Any
 
 from ..retrieve.bm25 import Hit
 from ..store.db import Database, Edge, Entity
-from .model import COMPONENT, FIELD, FILE, FLOW, OBJECT, PERSON, SERVICE, SYMBOL, TEAM, file_id, symbol_id
+from .model import (
+    COMPONENT, FIELD, FILE, FLOW, LAYOUT, OBJECT, PERMISSIONSET, PERSON, RECORDTYPE, RULE, SERVICE,
+    SYMBOL, TEAM, file_id, symbol_id,
+)
 
 MAX_NAMES = 6
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
@@ -87,18 +90,37 @@ def describe(db: Database, ent: Entity) -> str:
         head = f"{ent.name} — {a.get('language') or ''} {a.get('kind') or 'symbol'}".strip()
         if loc:
             head += f", {loc}"
+        sharing = [m for m in a.get("modifiers", []) if "sharing" in m]
+        if sharing:
+            head += f" ({sharing[0]})"
+        if a.get("annotations"):
+            parts.append("annotations: " + ", ".join("@" + x for x in a["annotations"][:5]))
+        if a.get("extends"):
+            parts.append(f"extends {a['extends']}")
+        if a.get("implements"):
+            parts.append("implements " + ", ".join(a["implements"][:5]))
+        if a.get("events"):
+            parts.append("events: " + ", ".join(a["events"]))
+        if a.get("dml"):
+            parts.append("dml: " + ", ".join(a["dml"]))
         members = n.out_ents("contains")
         if members:
             parts.append("members: " + _names(members, label=lambda e: _short(e.name)))
-        refs = n.out_ents("references") + n.out_ents("calls")
+        refs = n.out_ents("references")
         if refs:
             parts.append("references: " + _names(refs))
+        calls = n.out_ents("calls")
+        if calls:
+            parts.append("calls: " + _names(calls, label=lambda e: e.name if e.type != SYMBOL else e.name))
         on = n.out_ents("triggers_on")
         if on:
             parts.append("trigger on: " + _names(on))
-        by = n.in_ents("references") + n.in_ents("calls")
+        by = n.in_ents("references")
         if by:
             parts.append("referenced by: " + _names(by))
+        called_by = n.in_ents("calls")
+        if called_by:
+            parts.append("called by: " + _names(called_by))
         if a.get("path"):
             parts.extend(_file_facts(db, a["path"]))
     elif ent.type == OBJECT:
@@ -111,9 +133,21 @@ def describe(db: Database, ent: Entity) -> str:
         trig = n.in_ents("triggers_on")
         if trig:
             parts.append("triggers: " + _names(trig))
+        rules = n.in_ents("belongs_to", RULE)
+        if rules:
+            parts.append("validation rules: " + _names(rules, 4, label=lambda e: _short(e.name)))
+        rts = n.in_ents("belongs_to", RECORDTYPE)
+        if rts:
+            parts.append("record types: " + _names(rts, 4, label=lambda e: _short(e.name)))
+        layouts = n.in_ents("belongs_to", LAYOUT)
+        if layouts:
+            parts.append("layouts: " + _names(layouts, 3))
         used = [e for e in n.in_ents("references") if e.type != FIELD]
         if used:
             parts.append("used by: " + _names(used))
+        granted = n.in_ents("grants")
+        if granted:
+            parts.append("permission sets: " + _names(granted, 4))
     elif ent.type == SERVICE:
         head = f"{ent.name} — service"
         owners = n.in_ents("owns", TEAM)
@@ -163,15 +197,27 @@ def describe(db: Database, ent: Entity) -> str:
             parts.append("files: " + _names(files, 4))
     elif ent.type == FLOW:
         head = f"{ent.name} — flow"
-        extra = [a[k] for k in ("process_type", "status") if a.get(k)]
+        extra = [a[k] for k in ("process_type", "trigger_type", "status") if a.get(k)]
         if extra:
             head += f" ({', '.join(extra)})"
-        refs = n.out_ents("references")
-        if refs:
-            parts.append("objects: " + _names(refs))
-        calls = n.out_ents("calls")
-        if calls:
-            parts.append("calls Apex: " + _names(calls))
+        on = n.out_ents("triggers_on")
+        if on:
+            parts.append("triggered on: " + _names(on))
+        objs = n.out_ents("references", OBJECT)
+        if objs:
+            parts.append("objects: " + _names(objs))
+        flds = n.out_ents("references", FIELD)
+        if flds:
+            parts.append("fields: " + _names(flds, 5))
+        apex = n.out_ents("calls", SYMBOL)
+        if apex:
+            parts.append("calls Apex: " + _names(apex))
+        subs = n.out_ents("calls", FLOW)
+        if subs:
+            parts.append("subflows: " + _names(subs))
+        callers = n.in_ents("calls", FLOW)
+        if callers:
+            parts.append("called by flows: " + _names(callers))
     elif ent.type == FIELD:
         head = f"{ent.name} — field"
         if a.get("type"):
@@ -182,6 +228,37 @@ def describe(db: Database, ent: Entity) -> str:
         used = n.in_ents("references")
         if used:
             parts.append("used by: " + _names(used))
+        shown = n.in_ents("shows")
+        if shown:
+            parts.append("on layouts: " + _names(shown, 3))
+        granted = n.in_ents("grants")
+        if granted:
+            parts.append("permission sets: " + _names(granted, 4))
+    elif ent.type == RULE:
+        head = f"{ent.name} — validation rule" + ("" if a.get("active", True) else " (inactive)")
+        if a.get("error_message"):
+            head += f": {a['error_message'][:80]}"
+        refs = n.out_ents("references")
+        if refs:
+            parts.append("fields: " + _names(refs, label=lambda e: _short(e.name)))
+    elif ent.type == PERMISSIONSET:
+        head = f"{ent.name} — permission set"
+        objs = n.out_ents("grants", OBJECT)
+        if objs:
+            parts.append("objects: " + _names(objs))
+        flds = n.out_ents("grants", FIELD)
+        if flds:
+            parts.append(f"{len(flds)} field permissions")
+        classes = n.out_ents("grants", SYMBOL)
+        if classes:
+            parts.append("apex: " + _names(classes))
+    elif ent.type == LAYOUT:
+        head = f"{ent.name} — page layout"
+        shown = n.out_ents("shows")
+        if shown:
+            parts.append("fields: " + _names(shown, 8, label=lambda e: _short(e.name)))
+    elif ent.type == RECORDTYPE:
+        head = f"{ent.name} — record type" + (f" ({a['label']})" if a.get("label") else "")
     elif ent.type == FILE:
         head = f"{ent.name} — file"
         decl = n.out_ents("declares")

@@ -33,6 +33,7 @@ class ChunkingConfig:
     max_tokens: int = 800
     min_tokens: int = 40
     overlap_ratio: float = 0.10
+    parser: str = "auto"  # auto | treesitter | heuristic
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "ChunkingConfig":
@@ -42,7 +43,10 @@ class ChunkingConfig:
             max_tokens=int(d.get("max_tokens", cls.max_tokens)),
             min_tokens=int(d.get("min_tokens", cls.min_tokens)),
             overlap_ratio=float(d.get("overlap_ratio", cls.overlap_ratio)),
+            parser=str(d.get("parser", cls.parser)),
         )
+        if cfg.parser not in ("auto", "treesitter", "heuristic"):
+            raise ConfigError("chunking.parser must be auto, treesitter or heuristic")
         if cfg.target_tokens <= 0 or cfg.max_tokens < cfg.target_tokens:
             raise ConfigError("chunking: need 0 < target_tokens <= max_tokens")
         if not 0 <= cfg.overlap_ratio < 1:

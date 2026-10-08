@@ -6,28 +6,30 @@ and its surrounding documents, organises them into three context buckets
 context packs on demand. State lives in the repo and one local SQLite file.
 No services, no API keys.
 
-Works on any codebase with no language toolchain installed: markdown is split
-by heading, source code is split by declaration (Apex, Java, Kotlin, C#, Go,
-Rust, JavaScript/TypeScript, Python, and more), everything else is windowed as
-text. Salesforce DX projects are detected and get Apex, LWC/Aura/Visualforce
+Works on any codebase: markdown is split by heading, source code is split
+by declaration (tree-sitter for Java, Apex, Kotlin, Python, JavaScript and
+TypeScript when the `parse` extra is installed; a parser-free splitter for
+Groovy, C#, Go, Rust and the rest), everything else is windowed as text. Salesforce DX projects are detected and get Apex, LWC/Aura/Visualforce
 and metadata sources out of the box.
 
 ## Status
 
-Milestones 1 to 4 of the [design](docs/DESIGN.md) are done: config loader,
-SQLite schema, markdown and code ingest, hybrid retrieval (BM25 fused with
-local embeddings, optional cross-encoder rerank, near-duplicate dedupe),
+Milestones 1 to 5 of the [design](docs/DESIGN.md) are done: config loader,
+SQLite schema, markdown and code ingest (tree-sitter where available,
+heuristic splitter otherwise), hybrid retrieval (BM25 fused with local
+embeddings, optional cross-encoder rerank, near-duplicate dedupe),
 token-budgeted packs with a graph-derived Facts block, the context graph
-(ownership, code structure, Salesforce metadata, git history), a query log
-with anti-pattern stats, an eval harness with a grep baseline, and the
-`init` / `ingest` / `query` / `graph` / `stats` / `eval` commands.
+(ownership, code structure with method-level call edges, Salesforce
+metadata down to validation rules and permission sets, git history), a
+query log with anti-pattern stats, an eval harness with a grep baseline,
+and the `init` / `ingest` / `query` / `graph` / `stats` / `eval` commands.
 Freshness tracking, compiled `context/` pages and the MCP server are later
 milestones.
 
 ## Quickstart
 
 ```bash
-pip install -e ".[embed]"   # Python 3.11+; the embed extra adds fastembed (ONNX, CPU)
+pip install -e ".[embed,parse]"   # Python 3.11+; embed = fastembed (ONNX), parse = tree-sitter grammars
 cd /path/to/your/repo
 ctxgraph init               # writes ctxgraph.yaml and a self-ignoring .ctxgraph/
 ctxgraph ingest             # builds .ctxgraph/index.db, graph and vectors (incremental)
@@ -69,9 +71,9 @@ already has:
 
 | Source | Entities | Edges |
 | --- | --- | --- |
-| Code (any supported language) | file, symbol (class, method, trigger, function) | file declares symbol, class contains method, symbol references symbol |
-| Apex and Lightning | object, field, component | trigger triggers_on object, class references object/field, component calls Apex method, component uses component |
-| Salesforce metadata XML | object, field, flow | field belongs_to object, lookup references object, flow references object, flow calls Apex |
+| Code (any supported language) | file, symbol (class, method, trigger, function) with annotations, modifiers, extends/implements | file declares symbol, class contains method, symbol references symbol, method calls method (parsed languages) |
+| Apex and Lightning | object, field, component | trigger triggers_on object (with events), method references object/field via SOQL, methods carry their DML ops, component calls Apex method, component uses component |
+| Salesforce metadata XML | object, field, flow, validation rule, record type, permission set, layout | field belongs_to object, lookup references object, rule references field, flow triggers_on object / references field / calls subflow or Apex, permission set grants object/field/class, layout shows field |
 | `ctx/ownership.yaml`, `CODEOWNERS`, `ctx/dependencies.yaml` | team, person, service | team owns service/file, service contains file, service depends_on service, person member_of team |
 | Git history | person | person authored file, file co_changed file; files carry commit count, last change and last author |
 | Markdown chunks | | chunk mentions entity |
@@ -234,11 +236,12 @@ hit the budget ceiling) with a remedy for each.
 - A Salesforce DX layout (Apex classes and triggers, Lightning web
   components, object, field and flow metadata).
 - [spinnaker/orca](https://github.com/spinnaker/orca), a Java, Kotlin and
-  Groovy Gradle multi-module service: 1,866 source files, about 7,000 chunks
-  and 9,000 symbols, indexed in roughly nine seconds including 300 commits
-  of history. Spock feature methods keep their string names, Kotlin trailing
-  lambdas and anonymous classes are not mistaken for declarations, and
-  references to a name declared in several packages resolve through imports.
+  Groovy Gradle multi-module service: 1,866 source files, about 7,400 chunks
+  and 9,000 symbols, indexed in roughly ten seconds including 300 commits
+  of history and tree-sitter parsing of 1,245 files. Spock feature methods
+  keep their string names, Kotlin trailing lambdas and anonymous classes are
+  not mistaken for declarations, and references to a name declared in
+  several packages resolve through imports.
 
 ## Development
 

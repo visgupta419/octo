@@ -48,6 +48,7 @@ class Question:
     id: str
     q: str
     expect_paths: list[str] = field(default_factory=list)
+    expect_any_paths: list[str] = field(default_factory=list)  # any one of these counts as one hit
     expect_entities: list[str] = field(default_factory=list)
     buckets: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
@@ -196,6 +197,7 @@ def parse_questions(data: Any) -> tuple[dict[str, Any], list[Question]]:
             id=qid,
             q=str(item["q"]),
             expect_paths=_str_list(item.get("expect_paths"), f"{where}.expect_paths"),
+            expect_any_paths=_str_list(item.get("expect_any_paths"), f"{where}.expect_any_paths"),
             expect_entities=_str_list(item.get("expect_entities"), f"{where}.expect_entities"),
             buckets=_str_list(item.get("buckets"), f"{where}.buckets"),
             sources=_str_list(item.get("sources"), f"{where}.sources"),
@@ -203,8 +205,8 @@ def parse_questions(data: Any) -> tuple[dict[str, Any], list[Question]]:
             budget_tokens=None if budget is None else int(budget),
             tags=_str_list(item.get("tags"), f"{where}.tags"),
         )
-        if not q.expect_paths and not q.expect_entities:
-            raise EvalError(f"{where} ({qid}) needs expect_paths or expect_entities")
+        if not q.expect_paths and not q.expect_any_paths and not q.expect_entities:
+            raise EvalError(f"{where} ({qid}) needs expect_paths, expect_any_paths or expect_entities")
         out.append(q)
     defaults = {k: v for k, v in data.items() if k != "questions"}
     return defaults, out
@@ -324,6 +326,14 @@ def run_eval(
         cand_paths = [h.path for h in hits]
         path_hits = [e for e in q.expect_paths if any(path_matches(e, p) for p in pack_paths)]
         cand_hits = [e for e in q.expect_paths if any(path_matches(e, p) for p in cand_paths)]
+        any_total = 1 if q.expect_any_paths else 0
+        if q.expect_any_paths:
+            got = [e for e in q.expect_any_paths if any(path_matches(e, p) for p in pack_paths)]
+            if got:
+                path_hits.append(got[0])
+            got_c = [e for e in q.expect_any_paths if any(path_matches(e, p) for p in cand_paths)]
+            if got_c:
+                cand_hits.append(got_c[0])
         headings = [c.heading for c in pack.chunks if c.heading]
         entity_hits = [e for e in q.expect_entities if entity_present(e, pack.facts, headings)]
         top: list[str] = []
@@ -337,7 +347,7 @@ def run_eval(
                 id=q.id,
                 q=q.q,
                 path_hits=path_hits,
-                path_total=len(q.expect_paths),
+                path_total=len(q.expect_paths) + any_total,
                 candidate_hits=cand_hits,
                 entity_hits=entity_hits,
                 entity_total=len(q.expect_entities),
@@ -347,7 +357,7 @@ def run_eval(
                 mode=mode,
                 duration_ms=duration,
                 top_paths=top,
-                baseline=grep_baseline(file_index, q.q, q.expect_paths) if baseline else None,
+                baseline=grep_baseline(file_index, q.q, q.expect_paths + q.expect_any_paths[:1]) if baseline else None,
             )
         )
     return EvalReport(results=results, budget_tokens=budget, retriever=retriever_used)

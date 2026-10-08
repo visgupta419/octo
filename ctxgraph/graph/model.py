@@ -11,6 +11,7 @@ from ..store.db import Edge, Entity
 TEAM, PERSON, SERVICE, FILE, SYMBOL, OBJECT, FIELD, FLOW, COMPONENT = (
     "team", "person", "service", "file", "symbol", "object", "field", "flow", "component",
 )
+RULE, RECORDTYPE, PERMISSIONSET, LAYOUT = "rule", "recordtype", "permissionset", "layout"
 
 
 def ent_id(type_: str, name: str) -> str:

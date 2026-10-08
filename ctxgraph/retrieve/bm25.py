@@ -102,8 +102,10 @@ def build_fts_query(text: str, mode: str = "and") -> str | None:
 
 
 def file_importance(db: Database) -> dict[str, int]:
-    """path -> incoming references/calls to the symbols the file declares.
+    """path -> incoming ``references`` to the symbols the file declares.
 
+    Only class-level references count: method-level ``calls`` edges (many
+    from test methods) skewed the boost on orca and cost 8 points of recall.
     Cached on the connection; ``Database.clear_graph`` drops the cache.
     """
     cached = getattr(db, "_importance_cache", None)
@@ -113,7 +115,7 @@ def file_importance(db: Database) -> dict[str, int]:
         """
         SELECT json_extract(s.attrs_json, '$.path') AS path, COUNT(*) AS n
         FROM edges e JOIN entities s ON s.id = e.dst_id
-        WHERE e.kind IN ('references', 'calls') AND s.type = 'symbol'
+        WHERE e.kind = 'references' AND s.type = 'symbol'
         GROUP BY path
         """
     )

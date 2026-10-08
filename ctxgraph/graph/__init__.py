@@ -38,7 +38,7 @@ def build_graph(cfg: Config, db: Database) -> GraphReport:
     load_dependencies(cfg, b)
 
     code_paths = [p for p, sid in paths.items() if source_types.get(sid) == "code"]
-    texts = extract_structure(cfg.repo_root, b, sorted(code_paths))
+    texts = extract_structure(cfg.repo_root, b, sorted(code_paths), cfg.chunking.parser)
     extract_metadata(cfg.repo_root, b, list_repo_files(cfg.repo_root))
     resolve_references(b, texts)
     commits = extract_history(cfg, b, set(indexed))

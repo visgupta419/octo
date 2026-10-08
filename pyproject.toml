@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 embed = ["fastembed>=0.4"]
+parse = ["tree-sitter>=0.23", "tree-sitter-language-pack>=0.7"]
 dev = ["pytest>=8"]
 
 [project.scripts]

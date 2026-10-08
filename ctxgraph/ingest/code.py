@@ -461,6 +461,9 @@ def code_sections(lines: list[str], language: str | None, cfg: ChunkingConfig) -
     """Split source lines into declaration-aligned sections."""
     if not lines:
         return []
+    decls = parsed_declarations(lines, language, getattr(cfg, "parser", "auto"))
+    if decls is not None:
+        return _partition(lines, 0, len(lines), blocks_from_declarations(decls, lines), "", "file", cfg)
     if language in BRACE_LANGUAGES:
         masked = mask_source(lines, language)
         roots = scan_blocks(masked)
@@ -509,10 +512,13 @@ class Declaration:
     depth: int
 
 
-def list_declarations(lines: list[str], language: str | None) -> list[Declaration]:
+def list_declarations(lines: list[str], language: str | None, parser: str = "auto") -> list[Declaration]:
     """Every named block in the file, outermost first."""
     if not lines:
         return []
+    decls = parsed_declarations(lines, language, parser)
+    if decls is not None:
+        return sorted(decls, key=lambda d: (d.start_line, -d.end_line))
     if language in BRACE_LANGUAGES:
         masked = mask_source(lines, language)
         roots = scan_blocks(masked)
@@ -543,3 +549,76 @@ def list_declarations(lines: list[str], language: str | None) -> list[Declaratio
 
     walk(roots, "", 0)
     return out
+
+
+# --------------------------------------------------------------------------
+# Parser-backed path (tree-sitter), with the heuristic as fallback
+
+_COMMENT_PREFIXES = ("//", "/*", "*", "*/", "#", "@")
+
+
+def use_parser(language: str | None, parser: str = "auto") -> bool:
+    """Whether tree-sitter handles ``language`` under the ``parser`` setting."""
+    if parser == "heuristic":
+        return False
+    from . import treesitter
+
+    ok = treesitter.supports(language)
+    if parser == "treesitter" and not ok and language in treesitter.SUPPORTED:
+        raise RuntimeError(
+            "chunking.parser is treesitter but tree-sitter is not installed: pip install 'ctxgraph[parse]'"
+        )
+    return ok
+
+
+def blocks_from_declarations(decls: list[Declaration], lines: list[str]) -> list[Block]:
+    """Nest exact declarations into the Block tree the chunker partitions.
+
+    The header is extended upward over doc comments and decorators so they
+    travel with the declaration.
+    """
+    roots: list[Block] = []
+    stack: list[Block] = []
+    for d in sorted(decls, key=lambda d: (d.start_line, -d.end_line)):
+        b = Block(open_line=d.start_line - 1, close_line=d.end_line - 1, depth=d.depth, name=d.name, kind=d.kind)
+        b.header_start = _comment_header_start(lines, b.open_line)
+        while stack and stack[-1].close_line < b.open_line:
+            stack.pop()
+        (stack[-1].children if stack else roots).append(b)
+        stack.append(b)
+    return roots
+
+
+def _comment_header_start(lines: list[str], open_line: int) -> int:
+    """Walk up over the comment block (line or block comments, decorators)
+    directly above a declaration; stop at a blank line or any code."""
+    j = open_line
+    inside_block = False
+    while j - 1 >= 0:
+        prev = lines[j - 1].strip()
+        if not prev:
+            break
+        if inside_block:
+            j -= 1
+            if "/*" in prev:
+                inside_block = False
+            continue
+        if prev.startswith(_COMMENT_PREFIXES):
+            j -= 1
+            continue
+        if prev.endswith("*/"):
+            inside_block = "/*" not in prev
+            j -= 1
+            continue
+        break
+    return j
+
+
+def parsed_declarations(lines: list[str], language: str | None, parser: str = "auto") -> list[Declaration] | None:
+    """Declarations from tree-sitter when enabled and supported, else None."""
+    if not use_parser(language, parser):
+        return None
+    from . import treesitter
+
+    parsed = treesitter.parse_file("\n".join(lines), language)
+    return parsed.declarations if parsed else None
