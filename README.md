@@ -155,6 +155,17 @@ Every query is logged locally; `ctxgraph stats` turns the log into findings
 (sources never retrieved, queries that matched only some terms, packs that
 hit the budget ceiling) with a remedy for each.
 
+## Tested against
+
+- A Salesforce DX layout (Apex classes and triggers, Lightning web
+  components, object, field and flow metadata).
+- [spinnaker/orca](https://github.com/spinnaker/orca), a Java, Kotlin and
+  Groovy Gradle multi-module service: 1,866 source files, about 7,000 chunks
+  and 9,000 symbols, indexed in roughly nine seconds including 300 commits
+  of history. Spock feature methods keep their string names, Kotlin trailing
+  lambdas and anonymous classes are not mistaken for declarations, and
+  references to a name declared in several packages resolve through imports.
+
 ## Development
 
 ```bash

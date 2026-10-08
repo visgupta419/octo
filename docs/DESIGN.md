@@ -279,6 +279,32 @@ What ctxgraph adopts, scoped to one repo:
 Where ctxgraph deliberately differs: it stays local and git-native, with
 no service, and models only what it can compute from the repo.
 
+## 14c. Findings from the Spinnaker run
+
+Running milestone 2 against `spinnaker/orca` (Java, Kotlin, Groovy; 60
+Gradle modules) changed four things that a small Salesforce sample never
+exercised:
+
+- **Header classification is per language family.** In Kotlin and Groovy a
+  bare `name { ... }` or `name(args) { ... }` is almost always a call with
+  a trailing lambda, so only keyword-introduced declarations (`fun`, `def
+  name(`, `class`, `val x get()`) count. In Java-family languages a method
+  name is always preceded by a type or modifier. JavaScript keeps its
+  looser rules. Methods nested inside a method (anonymous classes) are not
+  named.
+- **Names collide in big repos.** Two classes called `Task` existed. The
+  reference pass now resolves a simple name through the file's imports
+  (explicit or wildcard) and then its own package directory, and declines
+  to guess when still ambiguous.
+- **Fact selection needs an importance signal.** A query word like "task"
+  matched a test-local class and a Kotlin property. Entities are now ranked
+  by incoming reference count with penalties for test code, nested symbols
+  and properties, and a plain English word only selects a symbol the
+  codebase actually leans on. Hits collapse to their top-level class.
+- **Spock feature methods are named by a string.** `def "stores a
+  pipeline"()` is extracted from the raw header so tests are discoverable
+  by what they assert.
+
 ## 15. Milestones
 
 1. **Done.** Config loader, SQLite schema, markdown + code + text ingest,

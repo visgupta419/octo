@@ -196,7 +196,12 @@ _TYPE_DECL_RE = re.compile(
     r"\b(class|interface|enum|trigger|record|struct|namespace|module|object|trait|impl|protocol|extension)"
     r"\s+([A-Za-z_]\w*)"
 )
-_NAMED_FUNC_RE = re.compile(r"\b(?:fn|func|function|def|sub|proc)\s+([A-Za-z_]\w*)")
+# `def name(`, `fun <T> Receiver.name(`, `function name(`: the name must be
+# followed by a parameter list, so `def x = ...` is a variable, not a function.
+_NAMED_FUNC_RE = re.compile(
+    r"\b(?:fn|func|function|def|sub|proc|fun)\s+(?:<[^>]*>\s*)?(?:[A-Za-z_][\w.]*\.)?([A-Za-z_]\w*)\s*(?:<[^>]*>\s*)?\("
+)
+_ANNOTATION_TYPE_RE = re.compile(r"@interface\s+([A-Za-z_]\w*)")
 _ASSIGN_FUNC_RE = re.compile(
     r"([A-Za-z_]\w*)\s*[:=]\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_]\w*\s*=>)"
 )
@@ -204,6 +209,21 @@ _CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
 _ANNOTATION_RE = re.compile(r"@[A-Za-z_][\w.]*(?:\s*\([^)]*\))?")
 _FIRST_TOKEN_RE = re.compile(r"^\s*([A-Za-z_]\w*)")
 _PROPERTY_RE = re.compile(r"^[\w<>\[\],.?\s]*?\b([A-Za-z_]\w*)\s*$")
+
+# Languages where `name { ... }` / `name(args) { ... }` is usually a call with a
+# trailing lambda, so only keyword-introduced declarations count.
+TRAILING_LAMBDA_LANGUAGES = {"kotlin", "groovy", "scala", "swift"}
+# Languages where a method name is always preceded by a type or modifier
+# (`void run(`, `def run(`), so a bare `run(` is a call, not a declaration.
+TYPED_METHOD_LANGUAGES = {"java", "apex", "groovy", "csharp", "c", "cpp", "objc", "dart", "kotlin", "scala"}
+# Languages with `Name { get; set; }` properties.
+PROPERTY_LANGUAGES = {"apex", "csharp"}
+_TYPED_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_][\w<>\[\],?.]*)\s+([A-Za-z_]\w*)\s*\(")
+# Kotlin property with an accessor block: `val x: T get() {` (no `=` initializer)
+_KOTLIN_PROP_RE = re.compile(
+    r"\b(?:val|var)\s+(?:<[^>]*>\s*)?(?:[A-Za-z_][\w.<>]*\.)?([A-Za-z_]\w*)\b[^=]*\b(?:get|set)\s*\("
+)
+_SPOCK_NAME_RE = re.compile(r"\bdef\s+(['\"])(.+?)\1\s*\(")
 
 _CONTROL = {
     "if", "else", "for", "foreach", "while", "do", "switch", "case", "default", "try",
@@ -237,8 +257,15 @@ def _header_start(lines: list[str], masked: list[str], open_line: int, floor: in
     return j
 
 
-def describe_header(text: str) -> tuple[str | None, str | None]:
-    """Return (kind, name) for a block header, or (None, None) if unnamed."""
+def describe_header(text: str, language: str | None = None, raw: str = "") -> tuple[str | None, str | None]:
+    """Return (kind, name) for a block header, or (None, None) if unnamed.
+
+    ``text`` is the masked header (strings and comments blanked); ``raw`` is
+    the original, used only for string-named Spock/Groovy test methods.
+    """
+    m = _ANNOTATION_TYPE_RE.search(text)
+    if m:
+        return "annotation", m.group(1)
     text = _ANNOTATION_RE.sub(" ", text)
     cut = max(text.rfind("}"), text.rfind(";"))
     if cut != -1:
@@ -250,13 +277,28 @@ def describe_header(text: str) -> tuple[str | None, str | None]:
     # lambda body), never a declaration body.
     if text.count("(") > text.count(")"):
         return None, None
+    if re.search(r"\bcompanion\s+object\s*$", text):
+        return "object", "companion"
     m = _TYPE_DECL_RE.search(text)
     if m:
         return m.group(1), m.group(2)
     m = _NAMED_FUNC_RE.search(text)
     if m:
         return "function", m.group(1)
+    if language == "groovy" and raw:
+        m = _SPOCK_NAME_RE.search(raw)
+        if m:
+            return "function", m.group(2).strip()
+    if language == "kotlin":
+        m = _KOTLIN_PROP_RE.search(text)
+        if m:
+            return "property", m.group(1)
     first = _FIRST_TOKEN_RE.match(text)
+    # `static {` / `synchronized (lock) {` are blocks; `static void f(` and
+    # `synchronized void f(` are modifiers on a declaration.
+    while first and first.group(1) in ("static", "synchronized", "default", "unsafe") and not text[first.end():].lstrip().startswith(("(", "{")) and text[first.end():].strip():
+        text = text[first.end() :].strip()
+        first = _FIRST_TOKEN_RE.match(text)
     if first and first.group(1) in ("get", "set") and "(" in text:
         text = text[first.end() :].strip()  # JS/C# accessor: `get name() {`
         first = _FIRST_TOKEN_RE.match(text)
@@ -267,28 +309,58 @@ def describe_header(text: str) -> tuple[str | None, str | None]:
         return None, None
     if "=>" in text or "->" in text:
         return None, None
-    for m in _CALL_RE.finditer(text):
-        name = m.group(1)
-        if name in _NOT_CALL_NAMES or text[: m.start()].rstrip().endswith("new"):
-            continue
-        return "function", name
-    if "(" not in text:
+    if language in TYPED_METHOD_LANGUAGES:
+        if language == "kotlin":
+            return None, None  # Kotlin functions always use `fun`
+        for m in _TYPED_CALL_RE.finditer(text):
+            type_tok, name = m.group(1), m.group(2)
+            if name in _NOT_CALL_NAMES or type_tok in ("new", "return", "throw", "else", "case"):
+                continue
+            if type_tok in _CONTROL:
+                continue
+            return "function", name
+        # a constructor with no modifier (`Foo(int x) {`) at the start of the header
+        m = _CALL_RE.match(text)
+        if m and m.group(1)[0].isupper() and m.group(1) not in _NOT_CALL_NAMES:
+            return "function", m.group(1)
+    else:
+        for m in _CALL_RE.finditer(text):
+            name = m.group(1)
+            if name in _NOT_CALL_NAMES or text[: m.start()].rstrip().endswith("new"):
+                continue
+            return "function", name
+    if "(" not in text and (language is None or language in PROPERTY_LANGUAGES):
         m = _PROPERTY_RE.match(text)
         if m and m.group(1) not in _NOT_PROPERTY_NAMES:
             return "property", m.group(1)
     return None, None
 
 
-def _annotate(blocks: list[Block], lines: list[str], masked: list[str], floor: int) -> None:
+def _annotate(
+    blocks: list[Block],
+    lines: list[str],
+    masked: list[str],
+    floor: int,
+    language: str | None = None,
+    in_function: bool = False,
+) -> None:
     cursor = floor
     for b in blocks:
         b.header_start = max(_header_start(lines, masked, b.open_line, cursor), cursor)
         head = " ".join(masked[b.header_start : b.open_line + 1])
+        raw = " ".join(lines[b.header_start : b.open_line + 1])
         brace = head.rfind("{")
         if brace != -1:
             head = head[:brace]
-        b.kind, b.name = describe_header(head)
-        _annotate(b.children, lines, masked, b.open_line + 1)
+        b.kind, b.name = describe_header(head, language, raw)
+        if in_function and language in TYPED_METHOD_LANGUAGES:
+            # a "method" inside a method is an anonymous class member or a
+            # lambda body: not a declaration worth naming
+            b.kind, b.name = None, None
+        _annotate(
+            b.children, lines, masked, b.open_line + 1, language,
+            in_function or b.kind == "function",
+        )
         cursor = b.close_line + 1
 
 
@@ -392,7 +464,7 @@ def code_sections(lines: list[str], language: str | None, cfg: ChunkingConfig) -
     if language in BRACE_LANGUAGES:
         masked = mask_source(lines, language)
         roots = scan_blocks(masked)
-        _annotate(roots, lines, masked, 0)
+        _annotate(roots, lines, masked, 0, language)
     elif language in PYTHON_LANGUAGES:
         roots = _python_blocks(lines)
     else:
@@ -444,7 +516,7 @@ def list_declarations(lines: list[str], language: str | None) -> list[Declaratio
     if language in BRACE_LANGUAGES:
         masked = mask_source(lines, language)
         roots = scan_blocks(masked)
-        _annotate(roots, lines, masked, 0)
+        _annotate(roots, lines, masked, 0, language)
     elif language in PYTHON_LANGUAGES:
         roots = _python_blocks(lines)
     else:

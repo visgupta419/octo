@@ -262,3 +262,55 @@ def test_cli_graph_stats_and_rebuild(tmp_path: Path):
     assert res.exit_code != 0 and "schema version" in res.output
     res = runner.invoke(main, ["-c", cfg, "ingest"])
     assert res.exit_code == 0 and "rebuilding" in res.output
+
+
+def test_references_disambiguate_by_import_and_package(tmp_path: Path):
+    root = tmp_path / "jvm"
+    root.mkdir()
+    git(root, "init", "-q")
+    write(root, "api/src/main/java/com/x/api/Task.java", "package com.x.api;\npublic interface Task {\n  void run();\n}\n")
+    write(root, "model/src/main/java/com/x/model/Task.java", "package com.x.model;\npublic class Task {\n  public String id;\n}\n")
+    write(root, "core/src/main/java/com/x/core/ApiUser.java",
+          "package com.x.core;\nimport com.x.api.Task;\npublic class ApiUser {\n  Task t;\n}\n")
+    write(root, "core/src/main/java/com/x/core/ModelUser.java",
+          "package com.x.core;\nimport com.x.model.*;\npublic class ModelUser {\n  Task t;\n}\n")
+    write(root, "model/src/main/java/com/x/model/Sibling.java",
+          "package com.x.model;\npublic class Sibling {\n  Task t;\n}\n")
+    write(root, "core/src/main/java/com/x/core/Unknown.java",
+          "package com.x.core;\npublic class Unknown {\n  Task t;\n}\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    cfg = parse_config({"version": 1, "sources": [{"id": "code", "type": "code", "bucket": "knowledge", "paths": ["**/*.java"]}]}, root / "ctxgraph.yaml")
+    db = Database(cfg.db_path)
+    run_ingest(cfg, db)
+    build_graph(cfg, db)
+
+    def refs(name):
+        e = db.find_entities(name, "symbol")[0]
+        return {n.id for edge, n in db.edges_from(e.id) if edge.kind == "references"}
+
+    assert refs("ApiUser") == {"symbol:Task@api/src/main/java/com/x/api/Task.java"}
+    assert refs("ModelUser") == {"symbol:Task@model/src/main/java/com/x/model/Task.java"}
+    assert refs("Sibling") == {"symbol:Task@model/src/main/java/com/x/model/Task.java"}
+    assert refs("Unknown") == set()  # ambiguous with no import: no guess
+
+
+def test_fact_selection_prefers_important_production_classes(tmp_path: Path):
+    root = tmp_path / "jvm2"
+    root.mkdir()
+    git(root, "init", "-q")
+    write(root, "src/main/java/com/x/Stage.java", "package com.x;\npublic class Stage {\n  public void go() {}\n}\n")
+    for i in range(3):
+        write(root, f"src/main/java/com/x/User{i}.java", f"package com.x;\npublic class User{i} {{\n  Stage s;\n}}\n")
+    write(root, "src/test/java/com/x/other/Stage.java", "package com.x.other;\npublic class Stage {\n  int unused;\n}\n")
+    write(root, "src/main/java/com/x/Run.java", "package com.x;\npublic class Run {\n  int x;\n}\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    cfg = parse_config({"version": 1, "sources": [{"id": "code", "type": "code", "bucket": "knowledge", "paths": ["**/*.java"]}]}, root / "ctxgraph.yaml")
+    db = Database(cfg.db_path)
+    run_ingest(cfg, db)
+    build_graph(cfg, db)
+    ents = entities_for_query(db, "how does a stage run", [])
+    assert [e.id for e in ents] == ["symbol:Stage@src/main/java/com/x/Stage.java"]  # test-only Stage and unreferenced Run skipped
+    ents = entities_for_query(db, "Run", [])
+    assert [e.name for e in ents] == ["Run"]  # identifier-like casing: exact match wins regardless

@@ -393,6 +393,14 @@ class Database:
             for r in rows
         ]
 
+    def in_degree(self, entity_id: str, kinds: tuple[str, ...] = ("references", "calls")) -> int:
+        marks = ",".join("?" * len(kinds))
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS n FROM edges WHERE dst_id = ? AND kind IN ({marks})",
+            (entity_id, *kinds),
+        ).fetchone()
+        return int(row["n"])
+
     def mentions_of(self, entity_id: str, limit: int = 10) -> list[str]:
         rows = self.conn.execute(
             """

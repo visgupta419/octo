@@ -18,6 +18,35 @@ _APEX_IMPORT_RE = re.compile(r"@salesforce/apex/(\w+)\.(\w+)")
 _SCHEMA_IMPORT_RE = re.compile(r"@salesforce/schema/(\w+)(?:\.(\w+))?")
 _LWC_TAG_RE = re.compile(r"<c-([a-z0-9]+(?:-[a-z0-9]+)*)")
 _COMPONENT_DIR_RE = re.compile(r"(?:^|/)(lwc|aura)/([^/]+)/")
+_IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+?)(?:\.\*)?\s*;?\s*$", re.MULTILINE)
+_PACKAGE_LANGUAGES = {"java", "kotlin", "groovy", "scala"}
+
+
+def _dir_of(path: str) -> str:
+    return path.rsplit("/", 1)[0] if "/" in path else ""
+
+
+def _resolve(
+    name_lower: str,
+    candidates: list[tuple[str, str]],
+    file_dir: str,
+    imports: list[str],
+) -> str | None:
+    """Pick one symbol id for a simple name, using imports and package layout."""
+    if len(candidates) == 1:
+        return candidates[0][0]
+    # explicit import: com.x.y.Name or wildcard com.x.y.* -> candidate under /com/x/y/
+    for imp in imports:
+        pkg = imp.rsplit(".", 1)[0] if imp.rsplit(".", 1)[-1].lower() == name_lower else imp
+        pkg_dir = "/" + pkg.replace(".", "/") + "/"
+        for sid, path in candidates:
+            if pkg_dir in "/" + _dir_of(path) + "/":
+                return sid
+    # same package (same directory)
+    for sid, path in candidates:
+        if _dir_of(path) == file_dir:
+            return sid
+    return None
 
 
 def _kebab_to_camel(s: str) -> str:
@@ -89,11 +118,12 @@ def extract_structure(repo_root: Path, b: GraphBuild, code_paths: list[str]) -> 
 
 def resolve_references(b: GraphBuild, texts: dict[str, tuple[str, str, str, str]]) -> None:
     """Link each file's primary entity to the known names it mentions."""
-    top_level = {
-        e.name.lower(): e.id
-        for e in b.by_type(SYMBOL)
-        if "." not in e.name and e.attrs.get("kind") in TYPE_KINDS
-    }
+    top_level_all: dict[str, list[tuple[str, str]]] = {}
+    for e in b.by_type(SYMBOL):
+        if "." not in e.name and e.attrs.get("kind") in TYPE_KINDS:
+            top_level_all.setdefault(e.name.lower(), []).append((e.id, e.attrs.get("path", "")))
+    # unambiguous names, for the LWC and deferred lookups below
+    top_level = {k: v[0][0] for k, v in top_level_all.items() if len(v) == 1}
     objects = {e.name.lower(): e.id for e in b.by_type(OBJECT)}
     fields = {e.name.lower(): e.id for e in b.by_type(FIELD)}
     # Apex names fields without the object: Industry_Segment__c, not Account.Industry_Segment__c
@@ -105,11 +135,22 @@ def resolve_references(b: GraphBuild, texts: dict[str, tuple[str, str, str, str]
 
     for path, (language, masked, raw, src) in texts.items():
         self_names = {b.entities[src].name.lower()} if src in b.entities else set()
+        file_dir = _dir_of(path)
+        imports = _IMPORT_RE.findall(raw) if language in _PACKAGE_LANGUAGES else []
         counts: dict[str, int] = {}
+        resolved: dict[str, str | None] = {}
         for m in _CAP_IDENT_RE.finditer(masked):
             k = m.group(0).lower()
-            if k in known and k not in self_names:
-                counts[known[k]] = counts.get(known[k], 0) + 1
+            if k in self_names:
+                continue
+            if k not in resolved:
+                if k in top_level_all:
+                    resolved[k] = _resolve(k, top_level_all[k], file_dir, imports)
+                else:
+                    resolved[k] = objects.get(k)
+            target = resolved[k]
+            if target:
+                counts[target] = counts.get(target, 0) + 1
         for m in _CUSTOM_RE.finditer(masked):
             k = m.group(0).lower()
             targets = [objects[k]] if k in objects else [fields[k]] if k in fields else fields_simple.get(k, [])

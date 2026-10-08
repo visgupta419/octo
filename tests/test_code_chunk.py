@@ -198,3 +198,114 @@ def test_describe_header_cases():
 def test_identifier_terms_split_camel_and_snake():
     terms = identifier_terms("AccountService.getAccounts(ad_decision, HTTPServer, plain)")
     assert terms.split() == ["account", "service", "get", "accounts", "ad", "decision", "http", "server"]
+
+
+def test_kotlin_trailing_lambdas_are_not_declarations():
+    src = """\
+class RunTaskHandler(private val repo: ExecutionRepository) : OrcaMessageHandler<RunTask> {
+    companion object {
+        const val X = 1
+    }
+
+    override fun handle(message: RunTask) {
+        message.withLocking {
+            withTask(message) { stage, task ->
+                stage.tasks.forEach { log.info(it.name) }
+            }
+        }
+    }
+
+    private fun trackResult(result: TaskResult) {
+        val tags = hashMapOf("status" to result.status) { it }
+    }
+
+    val timeout: Long get() { return 1L }
+
+    private val StageExecution.isRetryable: Boolean get() { return true }
+}
+"""
+    from ctxgraph.ingest.code import list_declarations
+
+    decls = [(d.kind, d.qualified) for d in list_declarations(src.splitlines(), "kotlin")]
+    assert decls == [
+        ("class", "RunTaskHandler"),
+        ("object", "RunTaskHandler.companion"),
+        ("function", "RunTaskHandler.handle"),
+        ("function", "RunTaskHandler.trackResult"),
+        ("property", "RunTaskHandler.timeout"),
+        ("property", "RunTaskHandler.isRetryable"),
+    ]
+
+
+def test_groovy_spock_and_closures():
+    src = """\
+class ExecutionRepositorySpec extends Specification {
+    @Subject ExecutionRepository repo = createRepo()
+
+    def "stores and retrieves a pipeline"() {
+        given:
+        def pipeline = pipeline { stage { type = "deploy" } }
+        when:
+        repo.store(pipeline)
+        then:
+        pipeline.stages.each { assert it.id }
+    }
+
+    void helper(String name) {
+        [1, 2].collect { it * 2 }
+    }
+}
+"""
+    from ctxgraph.ingest.code import list_declarations
+
+    decls = [(d.kind, d.qualified) for d in list_declarations(src.splitlines(), "groovy")]
+    assert decls == [
+        ("class", "ExecutionRepositorySpec"),
+        ("function", "ExecutionRepositorySpec.stores and retrieves a pipeline"),
+        ("function", "ExecutionRepositorySpec.helper"),
+    ]
+
+
+def test_java_calls_with_blocks_are_not_methods():
+    src = """\
+public class Foo {
+    private final List<String> names = new ArrayList<>();
+
+    Foo(int x) {
+        this.x = x;
+    }
+
+    public void run() {
+        names.forEach(n -> {
+            System.out.println(n);
+        });
+        executor.submit(new Runnable() {
+            public void run() { }
+        });
+        synchronized (lock) { count++; }
+    }
+
+    static Map<String, Integer> build(List<String> in) {
+        return in.stream().collect(toMap(a -> a, a -> 1, (a, b) -> {
+            return a;
+        }));
+    }
+}
+"""
+    from ctxgraph.ingest.code import list_declarations
+
+    decls = [(d.kind, d.qualified) for d in list_declarations(src.splitlines(), "java")]
+    assert decls == [
+        ("class", "Foo"),
+        ("function", "Foo.Foo"),
+        ("function", "Foo.run"),
+        ("function", "Foo.build"),
+    ]
+
+
+def test_javascript_methods_still_detected_without_types():
+    from ctxgraph.ingest.code import list_declarations
+
+    src = "class A {\n  handleClick() {\n    items.forEach((i) => { use(i); });\n  }\n}\n"
+    decls = [(d.kind, d.qualified) for d in list_declarations(src.splitlines(), "javascript")]
+    assert decls == [("class", "A"), ("function", "A.handleClick")]

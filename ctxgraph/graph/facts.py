@@ -15,7 +15,17 @@ _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 _TYPE_ORDER = {SYMBOL: 0, OBJECT: 1, SERVICE: 2, COMPONENT: 3, FLOW: 4, TEAM: 5, FIELD: 6, FILE: 7, PERSON: 8}
 
 
+_TEST_PATH_RE = re.compile(r"(^|/)(test|tests|spec|specs|__tests__)(/|$)")
+_TEST_NAME_RE = re.compile(r"(Test|Tests|Spec|IT)$")
+
+
+def is_test(e: Entity) -> bool:
+    path = e.attrs.get("path") or (e.name if e.type == FILE else "")
+    return bool(_TEST_PATH_RE.search(path)) or bool(_TEST_NAME_RE.search(e.name.split(".")[0]))
+
+
 def _names(ents: list[Entity], n: int = MAX_NAMES, label=None) -> str:
+    ents = sorted(ents, key=lambda e: (is_test(e), e.name))  # production code first
     shown = [label(e) if label else e.name for e in ents[:n]]
     extra = len(ents) - n
     return ", ".join(shown) + (f" (+{extra} more)" if extra > 0 else "")
@@ -196,23 +206,44 @@ def describe(db: Database, ent: Entity) -> str:
     return head + ("; " + "; ".join(parts) if parts else "")
 
 
+def _importance(db: Database, e: Entity) -> float:
+    """Higher is better: referenced a lot, production code, top-level, not a property."""
+    score = float(db.in_degree(e.id))
+    if e.type == SYMBOL:
+        if "." in e.name:
+            score -= 2
+        if e.attrs.get("kind") == "property":
+            score -= 3
+    if is_test(e):
+        score -= 5
+    return score
+
+
 def _query_entities(db: Database, query: str) -> list[Entity]:
     tokens = _WORD_RE.findall(query)
-    candidates: list[str] = []
+    candidates: list[tuple[str, bool]] = []  # (text, identifier-like)
     for i, tok in enumerate(tokens):
+        ident = "." in tok or "_" in tok or (tok[1:] != tok[1:].lower() and tok[1:] != tok[1:].upper())
         if len(tok) >= 3:
-            candidates.append(tok)
+            candidates.append((tok, ident))
         if i + 1 < len(tokens):
-            candidates.append(tok + tokens[i + 1])
-            candidates.append(tok + "_" + tokens[i + 1])
-    found: dict[str, Entity] = {}
-    for cand in candidates:
-        identifier_like = "." in cand or "_" in cand or (cand[1:] != cand[1:].lower() and cand[1:] != cand[1:].upper())
-        for e in db.find_entities(cand) if identifier_like else _exact(db, cand):
-            if e.type in (PERSON, FILE):
+            candidates.append((tok + tokens[i + 1], True))
+            candidates.append((tok + "_" + tokens[i + 1], True))
+    scored: dict[str, tuple[float, Entity]] = {}
+    for cand, ident in candidates:
+        for e in db.find_entities(cand) if ident else _exact(db, cand):
+            if e.type in (PERSON, FILE) or e.id in scored:
                 continue
-            found.setdefault(e.id, e)
-    return sorted(found.values(), key=lambda e: (_TYPE_ORDER.get(e.type, 9), "." in e.name, e.name))
+            score = _importance(db, e)
+            # A plain English word ("task", "run") only counts when it names
+            # something the codebase actually leans on; an exact-case match
+            # on a capitalised name ("Run") is taken as deliberate.
+            deliberate = ident or (cand[0].isupper() and e.name == cand)
+            if not deliberate and e.type == SYMBOL and (score < 2 or "." in e.name):
+                continue
+            scored[e.id] = (score, e)
+    ranked = sorted(scored.values(), key=lambda t: (-t[0], _TYPE_ORDER.get(t[1].type, 9), t[1].name))
+    return [e for _, e in ranked]
 
 
 def _exact(db: Database, name: str) -> list[Entity]:
@@ -224,12 +255,11 @@ def _exact(db: Database, name: str) -> list[Entity]:
 
 
 def _hit_entities(db: Database, hits: list[Hit], top: int = 5) -> list[Entity]:
+    """The top-level class (not the method) behind each of the best hits."""
     out: list[Entity] = []
     for h in hits[:top]:
         ent = None
-        if h.heading and h.source_id and "." not in h.heading.split(" > ")[0] and db.get_entity(symbol_id(h.heading.replace(" > ", "."), h.path)):
-            ent = db.get_entity(symbol_id(h.heading.replace(" > ", "."), h.path))
-        if ent is None and h.heading:
+        if h.heading:
             ent = db.get_entity(symbol_id(h.heading.split(" > ")[0], h.path))
         if ent is None:
             f = db.get_entity(file_id(h.path))
@@ -237,7 +267,7 @@ def _hit_entities(db: Database, hits: list[Hit], top: int = 5) -> list[Entity]:
                 ent = f
         if ent and all(ent.id != e.id for e in out):
             out.append(ent)
-    return out
+    return sorted(out, key=lambda e: is_test(e))
 
 
 def entities_for_query(db: Database, query: str, hits: list[Hit], limit: int = 5) -> list[Entity]:
