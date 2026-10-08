@@ -118,13 +118,15 @@ BM25 matches natural-language queries against code.
 
 `ctxgraph ingest` is incremental by default; `--full` rebuilds.
 
-## 9. Retrieval and compilation **[M1/M2 for steps 1, 2, 5, 6, 7]**
+## 9. Retrieval and compilation **[M1-M3 for steps 1, 2, 5, 6, 7]**
 
 Query input: free text plus `buckets`, `sources`, `paths`, later `teams`,
 `services`, `since_commit` / `since_days`, and `budget_tokens`.
 
 1. Hard filters in SQL.
-2. BM25 top-k (k=50). All terms required, fallback to any term.
+2. BM25 top-k (k=50) with stopwords dropped; the all-terms and any-term
+   lists are fused by reciprocal rank. Test paths are demoted and files
+   whose symbols are referenced heavily are boosted (`retrieval:` knobs).
 3. (M4) Embedding top-k, merged with reciprocal rank fusion.
 4. (M4) Optional rerank of the top 30.
 5. Graph facts: up to five entities named in the query or declared by the
@@ -166,12 +168,17 @@ ctxgraph eval                        # M3
 MCP server (`ctxgraph serve`) — M7: `get_context`, `get_service`,
 `get_owner`, `list_stale_sources`, `search`.
 
-## 13. Evaluation — M3
+## 13. Evaluation **[M3]**
 
 `evals/questions.yaml` with expected paths and entities per question;
-`ctxgraph eval` reports path recall@budget, entity recall, pack size and
-latency, and fails CI below a threshold. Add the question set for the target
-repo before milestone 3 so retrieval changes are measured from the start.
+`ctxgraph eval` reports path recall at budget (chunks plus paths cited by
+Facts), candidate recall (retrieved at all), entity recall, pack size,
+latency, and a grep-and-read baseline for tokens-to-answer without the
+pack; `--fail-under` fails CI. Results on spinnaker/orca, 24 questions at
+3,000 tokens: path recall 21% → 75%, candidate recall 67% → 96%, entity
+recall 25% → 71% over the milestone; grep baseline 42% recall at 14x the
+tokens. The six remaining misses are ranking-within-budget cases, the
+target for milestone 4.
 
 ## 14. Lessons applied from Uber's Software Factory
 
@@ -316,10 +323,15 @@ exercised:
    uses, authored, co_changed and doc mentions; `graph` command; Facts
    block first in packs; `query_log` and `ctxgraph stats`. Commits are
    not entities (authorship and co-change edges carry what packs need).
-3. Evals (pulled forward): `evals/questions.yaml` built from real work on
-   the target repo; `eval` reports recall at budget, tokens-to-answer and
-   tool calls grounded vs ungrounded; CI threshold. Deterministic pack
-   output verified by a test.
+3. **Done.** Evals: `evals/questions.yaml` per repo (24 questions for
+   spinnaker/orca shipped as an example, 10 for ctxgraph itself run in CI);
+   `eval` reports path, candidate and entity recall, pack tokens, latency
+   and a deterministic grep-and-read baseline; `--fail-under` gates CI;
+   pack output verified byte-identical across runs. Tuning driven by the
+   harness: stopword removal, strict/loose rank fusion, heading and file
+   name terms, test-path demotion, importance boost, per-file cap, Facts
+   derived from the compiled pack. A real agent A/B (tokens and tool calls
+   with a model in the loop) remains an optional `--agent` hook for later.
 4. Hybrid retrieval: local embeddings, RRF, rerank toggle, near-dup dedupe,
    each admitted only if the eval harness shows a win on cost per correct
    answer.

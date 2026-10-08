@@ -206,7 +206,7 @@ def sections_to_chunks(
                     start_line=ws + 1,
                     end_line=we,
                     heading=sec.breadcrumb,
-                    terms=identifier_terms(body),
+                    terms=identifier_terms(f"{path.rsplit('/', 1)[-1]} {sec.breadcrumb}\n{body}"),
                     meta=chunk_meta,
                 )
             )

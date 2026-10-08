@@ -144,3 +144,51 @@ def test_render_escapes_backtick_fences(config: Config, db: Database):
     h = Hit("1", "s", "p.md", "norms", "```\ncode\n```", 1, 3, None, 5, "h", "", 1.0, 1)
     md = render_markdown(compile_pack("q", [h], 100))
     assert "````text\n```\ncode\n```\n````" in md
+
+
+def test_rrf_merge_orders_by_agreement():
+    from ctxgraph.retrieve.bm25 import Hit
+    from ctxgraph.retrieve.fusion import rrf_merge
+
+    def h(i, path):
+        return Hit(i, "s", path, "knowledge", "t", 1, 2, None, 5, "h" + i, "", 1.0, 0)
+
+    a = [h("1", "a"), h("2", "b"), h("3", "c")]
+    b = [h("3", "c"), h("1", "a"), h("4", "d")]
+    merged = rrf_merge([a, b])
+    assert [m.id for m in merged] == ["1", "3", "2", "4"]
+    assert [m.rank for m in merged] == [1, 2, 3, 4]
+    assert merged[0].score > merged[1].score > merged[2].score
+    assert [m.id for m in rrf_merge([a, b], limit=2)] == ["1", "3"]
+
+
+def test_stopwords_and_test_penalty(config, db):
+    from ctxgraph.retrieve.bm25 import is_test_path, search_terms
+
+    assert search_terms("what starts a pipeline execution when it is triggered") == ["starts", "pipeline", "execution", "triggered"]
+    assert search_terms("the of a") == ["the", "of", "a"]  # fallback keeps something
+    assert is_test_path("orca-core/src/test/java/X.java")
+    assert is_test_path("a/FooSpec.groovy") and is_test_path("a/FooTest.kt")
+    assert not is_test_path("a/src/main/java/Foo.java")
+
+
+def test_retrieval_config_parsing(repo):
+    from ctxgraph.config import ConfigError, parse_config
+    import pytest
+
+    base = {"version": 1, "sources": [{"id": "d", "type": "markdown", "bucket": "knowledge", "paths": ["*.md"]}]}
+    cfg = parse_config({**base, "retrieval": {"candidates": 80, "test_path_penalty": 0.3, "max_chunks_per_file": 1}}, repo / "ctxgraph.yaml")
+    assert (cfg.retrieval.candidates, cfg.retrieval.test_path_penalty, cfg.retrieval.max_chunks_per_file) == (80, 0.3, 1)
+    with pytest.raises(ConfigError):
+        parse_config({**base, "retrieval": {"test_path_penalty": 0}}, repo / "ctxgraph.yaml")
+
+
+def test_pack_per_file_cap(config, db):
+    run_ingest(config, db)
+    hits = search(db, "service retry sqlite")
+    from ctxgraph.retrieve.bm25 import Hit
+
+    dup = [Hit(**{**hits[0].__dict__, "id": f"x{i}", "hash": f"h{i}"}) for i in range(3)] + hits
+    pack = compile_pack("q", dup, 10_000, max_chunks_per_file=2)
+    assert sum(1 for c in pack.chunks if c.path == hits[0].path) == 2
+    assert pack.dropped_file_cap >= 1

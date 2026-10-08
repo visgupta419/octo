@@ -51,6 +51,27 @@ class ChunkingConfig:
 
 
 @dataclass
+class RetrievalConfig:
+    candidates: int = 50  # chunks retrieved before compiling
+    test_path_penalty: float = 0.5  # score multiplier for test/spec files
+    max_chunks_per_file: int = 2  # per pack, so one file cannot eat the budget
+    importance_boost: float = 0.15  # score *= 1 + boost * log1p(incoming references)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "RetrievalConfig":
+        d = d or {}
+        cfg = cls(
+            candidates=int(d.get("candidates", cls.candidates)),
+            test_path_penalty=float(d.get("test_path_penalty", cls.test_path_penalty)),
+            max_chunks_per_file=int(d.get("max_chunks_per_file", cls.max_chunks_per_file)),
+            importance_boost=float(d.get("importance_boost", cls.importance_boost)),
+        )
+        if cfg.candidates <= 0 or not 0 < cfg.test_path_penalty <= 1 or cfg.max_chunks_per_file <= 0:
+            raise ConfigError("retrieval: candidates and max_chunks_per_file must be > 0, test_path_penalty in (0, 1]")
+        return cfg
+
+
+@dataclass
 class GraphConfig:
     ownership: str = "ctx/ownership.yaml"
     dependencies: str = "ctx/dependencies.yaml"
@@ -111,6 +132,7 @@ class Config:
     exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE))
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def exclude_for(self, source: Source) -> list[str]:
@@ -206,6 +228,7 @@ def parse_config(
         exclude=list(DEFAULT_EXCLUDE) if exclude is None else _as_str_list(exclude, "exclude"),
         chunking=ChunkingConfig.from_dict(data.get("chunking")),
         graph=GraphConfig.from_dict(data.get("graph")),
+        retrieval=RetrievalConfig.from_dict(data.get("retrieval")),
         raw=data,
     )
 
@@ -375,6 +398,23 @@ services: []
 #    team: platform
 #    paths: ["force-app/main/default/classes/Account*.cls"]
 #    runbook: docs/runbooks/accounts.md
+"""
+
+QUESTIONS_TEMPLATE = """\
+# Eval questions for ctxgraph. Run `ctxgraph eval` after `ctxgraph ingest`.
+# Write questions the way you would ask a teammate, and list the file(s) a
+# good answer must cite. A bare file name matches any path ending in it;
+# globs (**/Foo*.java) work too. expect_entities are class/object/service
+# names that should appear in the Facts block.
+version: 1
+budget_tokens: 3000
+
+questions: []
+#  - id: discounts
+#    q: how do we calculate opportunity discounts
+#    expect_paths: [DiscountService.cls]
+#    expect_entities: [DiscountService, Opportunity]
+#    tags: [sales]
 """
 
 DEPENDENCIES_TEMPLATE = """\

@@ -15,12 +15,14 @@ from .config import (
     CONFIG_FILENAME,
     DEPENDENCIES_TEMPLATE,
     OWNERSHIP_TEMPLATE,
+    QUESTIONS_TEMPLATE,
     Config,
     ConfigError,
     find_config,
     load_config,
     render_init_template,
 )
+from .evals import DEFAULT_QUESTIONS_PATH, EvalError, load_questions, render_report, run_eval
 from .graph import build_graph
 from .graph.facts import describe_json, facts_for_query
 from .ingest import run_ingest
@@ -82,6 +84,11 @@ def init(target: Path, force: bool) -> None:
         if not p.exists():
             p.write_text(template, encoding="utf-8")
             click.echo(f"wrote {p}")
+    questions = target / DEFAULT_QUESTIONS_PATH
+    if not questions.exists():
+        questions.parent.mkdir(exist_ok=True)
+        questions.write_text(QUESTIONS_TEMPLATE, encoding="utf-8")
+        click.echo(f"wrote {questions}")
     if (target / "sfdx-project.json").is_file():
         click.echo("detected a Salesforce DX project: added apex, lwc-aura-vf and sf-metadata sources")
     click.echo("next: edit the sources, then run `ctxgraph ingest` and `ctxgraph query \"...\"`")
@@ -127,6 +134,15 @@ def ingest(ctx: click.Context, full: bool) -> None:
     )
 
 
+def compile_with_facts(db: Database, text: str, hits, budget: int, cfg: Config, facts: bool = True):
+    """Compile twice: the first pass decides which chunks fit, the second adds
+    Facts for the entities those chunks (and the query) name."""
+    cap = cfg.retrieval.max_chunks_per_file
+    draft = compile_pack(text, hits, budget, max_chunks_per_file=cap)
+    lines = facts_for_query(db, text, draft.chunks) if facts else []
+    return compile_pack(text, hits, budget, facts=lines, max_chunks_per_file=cap)
+
+
 def _open_index(cfg: Config) -> Database:
     if not cfg.db_path.exists():
         raise click.ClickException(f"no index at {cfg.db_path}; run `ctxgraph ingest` first")
@@ -148,7 +164,7 @@ def _join(items: list[dict], n: int = 15) -> str:
 @click.option("-s", "--source", "sources", multiple=True, help="Restrict to a source id (repeatable).")
 @click.option("-p", "--path", "paths", multiple=True, help="Restrict to a path prefix (repeatable).")
 @click.option("--budget", type=int, default=None, help="Token budget for the pack (default from config).")
-@click.option("--limit", type=int, default=50, show_default=True, help="Candidate chunks to retrieve before compiling.")
+@click.option("--limit", type=int, default=None, help="Candidate chunks to retrieve before compiling (default from config).")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of markdown.")
 @click.option("--no-facts", is_flag=True, help="Skip the graph Facts block.")
 @click.option("--no-log", is_flag=True, help="Do not record this query in the query log.")
@@ -168,11 +184,14 @@ def query(
     """Compile a bounded context pack for a free-text query."""
     cfg = _load(ctx)
     filters = QueryFilters(buckets=list(buckets), sources=list(sources), path_prefixes=list(paths))
+    limit = limit or cfg.retrieval.candidates
     started = time.monotonic()
     with _open_index(cfg) as db:
-        hits, mode = search_mode(db, text, filters, limit=limit)
-        facts = [] if no_facts else facts_for_query(db, text, hits)
-        pack = compile_pack(text, hits, budget or cfg.budget_tokens_default, facts=facts)
+        hits, mode = search_mode(
+            db, text, filters, limit=limit,
+            test_penalty=cfg.retrieval.test_path_penalty, importance_boost=cfg.retrieval.importance_boost,
+        )
+        pack = compile_with_facts(db, text, hits, budget or cfg.budget_tokens_default, cfg, facts=not no_facts)
         if not no_log:
             db.log_query(
                 text,
@@ -232,3 +251,38 @@ def stats(ctx: click.Context, as_json: bool) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+
+
+@main.command("eval")
+@click.option("-q", "--questions", "questions_path", type=click.Path(path_type=Path), default=None,
+              help=f"Questions file (default: {DEFAULT_QUESTIONS_PATH} in the repo).")
+@click.option("--budget", type=int, default=None, help="Token budget per question (default from the questions file or config).")
+@click.option("--tag", "tags", multiple=True, help="Run only questions with this tag (repeatable).")
+@click.option("--fail-under", type=float, default=None, help="Exit 1 when aggregate path recall is below this fraction.")
+@click.option("--no-baseline", is_flag=True, help="Skip the grep-and-read baseline.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+@click.pass_context
+def eval_cmd(
+    ctx: click.Context,
+    questions_path: Path | None,
+    budget: int | None,
+    tags: tuple[str, ...],
+    fail_under: float | None,
+    no_baseline: bool,
+    as_json: bool,
+) -> None:
+    """Score packs against evals/questions.yaml (path, candidate and entity recall)."""
+    cfg = _load(ctx)
+    path = questions_path or (cfg.repo_root / DEFAULT_QUESTIONS_PATH)
+    try:
+        defaults, questions = load_questions(path)
+    except EvalError as exc:
+        raise click.ClickException(str(exc)) from exc
+    budget = budget or (int(defaults["budget_tokens"]) if defaults.get("budget_tokens") else None)
+    with _open_index(cfg) as db:
+        report = run_eval(cfg, db, questions, budget_tokens=budget, baseline=not no_baseline, tags=list(tags))
+    if not report.results:
+        raise click.ClickException("no questions matched")
+    click.echo(json.dumps(report.to_dict(), indent=2) if as_json else render_report(report))
+    if fail_under is not None and (report.path_recall or 0.0) < fail_under:
+        raise click.exceptions.Exit(1)

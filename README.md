@@ -14,13 +14,14 @@ and metadata sources out of the box.
 
 ## Status
 
-Milestones 1 and 2 of the [design](docs/DESIGN.md) are done: config loader,
+Milestones 1 to 3 of the [design](docs/DESIGN.md) are done: config loader,
 SQLite schema, markdown and code ingest, BM25 retrieval with filters,
 token-budgeted packs with a graph-derived Facts block, the context graph
 (ownership, code structure, Salesforce metadata, git history), a query log
-with anti-pattern stats, and the `init` / `ingest` / `query` / `graph` /
-`stats` commands. Evals, embeddings, freshness tracking, compiled `context/`
-pages and the MCP server are later milestones.
+with anti-pattern stats, an eval harness with a grep baseline, and the
+`init` / `ingest` / `query` / `graph` / `stats` / `eval` commands.
+Embeddings, freshness tracking, compiled `context/` pages and the MCP server
+are later milestones.
 
 ## Quickstart
 
@@ -34,6 +35,7 @@ ctxgraph query "AccountService getAccounts" --bucket knowledge --json
 ctxgraph graph AccountService         # describe a class, object, service, file...
 ctxgraph graph Account -t object
 ctxgraph stats                        # context anti-patterns from the query log
+ctxgraph eval --fail-under 0.7        # score packs against evals/questions.yaml
 ```
 
 A pack looks like this:
@@ -143,13 +145,44 @@ Rules worth knowing:
 ## How retrieval works today
 
 1. Hard filters in SQL: `--bucket`, `--source`, `--path` prefix.
-2. BM25 over an FTS5 index (Porter stemming, underscores kept in tokens).
-   All query terms are required first; if nothing matches, any term will do.
-   Compound identifiers are also indexed split, so `getAccounts` matches
-   "get accounts".
-3. Graph facts for entities named in the query or declared by the top hits,
-   capped at 40% of the budget.
-4. Dedupe by content hash, then fill the remaining budget in rank order.
+2. BM25 over an FTS5 index (Porter stemming, underscores kept in tokens),
+   with question words dropped. Chunks holding every term are ranked first
+   and the any-term list is fused in by reciprocal rank. Compound
+   identifiers, headings and file names are also indexed split, so
+   "execution launcher" finds `ExecutionLauncher.java`.
+3. Rerank: test and spec files are demoted, files whose classes the
+   codebase references heavily are boosted. Both are `retrieval:` knobs.
+4. Dedupe by content hash, cap chunks per file, fill the remaining budget in
+   rank order.
+5. Graph facts for entities named in the query or declared by the chunks
+   that made the pack, capped at 40% of the budget and placed first.
+
+## Measuring it
+
+`evals/questions.yaml` holds questions the way you would ask a teammate,
+each with the files and entities a good answer must cite:
+
+```yaml
+questions:
+  - id: start-execution
+    q: what starts a pipeline execution when it is triggered
+    expect_paths: [ExecutionLauncher.java]      # bare name matches the path tail
+    expect_entities: [ExecutionLauncher]
+    tags: [core]
+```
+
+`ctxgraph eval` compiles a pack per question and reports path recall
+(expected file in the pack or cited by a Facts line), candidate recall
+(expected file retrieved at all, which separates ranking misses from
+retrieval misses), entity recall, pack tokens and latency. It also runs a
+deterministic baseline, an agent that greps the query terms and reads the
+matching files, so you get tokens-to-answer with and without the pack.
+`--fail-under` makes it a CI gate; `evals/examples/spinnaker-orca.yaml` is a
+24-question set for spinnaker/orca.
+
+On orca, the milestone-3 tuning moved path recall from 21% to 75% and
+candidate recall from 67% to 96%, at a mean pack of about 2,300 tokens
+against roughly 32,000 for the grep baseline.
 
 Every query is logged locally; `ctxgraph stats` turns the log into findings
 (sources never retrieved, queries that matched only some terms, packs that
@@ -186,7 +219,8 @@ ctxgraph/
   graph/           model.py, ownership.py, symbols.py, salesforce.py,
                    history.py, mentions.py, facts.py, __init__.py (builder)
   store/           schema.sql, db.py
-  retrieve/        bm25.py, search.py
+  retrieve/        bm25.py, fusion.py, search.py
+  evals/           question loading, runner, grep baseline, report
   compile/         pack.py (budget, facts, dedupe), render.py (markdown/json)
   stats.py         query-log anti-patterns
   cli.py

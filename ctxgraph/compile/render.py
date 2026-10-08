@@ -34,6 +34,8 @@ def render_markdown(pack: ContextPack) -> str:
         summary += f", {pack.dropped_duplicates} duplicates dropped"
     if pack.dropped_over_budget:
         summary += f", {pack.dropped_over_budget} over budget"
+    if pack.dropped_file_cap:
+        summary += f", {pack.dropped_file_cap} beyond per-file cap"
     summary += ")._"
     out.append(summary)
     out.append("")

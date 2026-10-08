@@ -1,0 +1,37 @@
+# ctxgraph evaluating itself. `ctxgraph ingest && ctxgraph eval` in this repo.
+version: 1
+budget_tokens: 3000
+
+questions:
+  - id: chunk-ids
+    q: how are chunk ids computed so re-ingest is idempotent
+    expect_paths: [ctxgraph/ingest/__init__.py]
+    expect_entities: [chunk_id]
+  - id: markdown-split
+    q: how is markdown split by heading with a breadcrumb
+    expect_paths: [ctxgraph/ingest/chunk.py]
+  - id: standard-objects
+    q: which standard salesforce objects are recognised in apex
+    expect_paths: [ctxgraph/graph/salesforce.py]
+  - id: fts-query
+    q: how is the fts match query built from free text
+    expect_paths: [ctxgraph/retrieve/bm25.py]
+    expect_entities: [build_fts_query]
+  - id: fact-selection
+    q: how are entities chosen for the facts block of a pack
+    expect_paths: [ctxgraph/graph/facts.py]
+  - id: cochange
+    q: how are co-change edges derived from git history
+    expect_paths: [ctxgraph/graph/history.py]
+  - id: sfdx-detect
+    q: how does init detect a salesforce dx project
+    expect_paths: [ctxgraph/config.py]
+  - id: schema-mismatch
+    q: what happens when the index schema version does not match
+    expect_paths: [ctxgraph/store/db.py]
+  - id: codeowners
+    q: how is CODEOWNERS parsed into owners for files
+    expect_paths: [ctxgraph/graph/ownership.py]
+  - id: trailing-lambda
+    q: why are kotlin trailing lambdas not treated as declarations
+    expect_paths: [ctxgraph/ingest/code.py]

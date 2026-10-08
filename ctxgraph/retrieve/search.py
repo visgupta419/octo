@@ -15,9 +15,11 @@ def search_mode(
     text: str,
     filters: QueryFilters | None = None,
     limit: int = 50,
+    test_penalty: float = 1.0,
+    importance_boost: float = 0.0,
 ) -> tuple[list[Hit], str]:
     """Ranked hits and the match mode ("all", "any", "none")."""
-    return bm25_search_mode(db, text, filters, limit)
+    return bm25_search_mode(db, text, filters, limit, test_penalty, importance_boost)
 
 
 def search(

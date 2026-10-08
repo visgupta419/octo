@@ -300,6 +300,7 @@ class Database:
     # -- graph -------------------------------------------------------------
 
     def clear_graph(self) -> None:
+        self._importance_cache = None
         self.conn.execute("DELETE FROM mentions")
         self.conn.execute("DELETE FROM edges")
         self.conn.execute("DELETE FROM entities")

@@ -254,7 +254,7 @@ def _exact(db: Database, name: str) -> list[Entity]:
     return [db._row_entity(r) for r in rows]
 
 
-def _hit_entities(db: Database, hits: list[Hit], top: int = 5) -> list[Entity]:
+def _hit_entities(db: Database, hits, top: int = 5) -> list[Entity]:
     """The top-level class (not the method) behind each of the best hits."""
     out: list[Entity] = []
     for h in hits[:top]:
@@ -270,7 +270,7 @@ def _hit_entities(db: Database, hits: list[Hit], top: int = 5) -> list[Entity]:
     return sorted(out, key=lambda e: is_test(e))
 
 
-def entities_for_query(db: Database, query: str, hits: list[Hit], limit: int = 5) -> list[Entity]:
+def entities_for_query(db: Database, query: str, hits, limit: int = 5) -> list[Entity]:
     chosen: list[Entity] = []
     for e in _query_entities(db, query) + _hit_entities(db, hits):
         if all(e.id != c.id for c in chosen):
@@ -280,7 +280,8 @@ def entities_for_query(db: Database, query: str, hits: list[Hit], limit: int = 5
     return chosen
 
 
-def facts_for_query(db: Database, query: str, hits: list[Hit], limit: int = 5) -> list[str]:
+def facts_for_query(db: Database, query: str, hits, limit: int = 5) -> list[str]:
+    """``hits`` is any sequence with ``.heading`` and ``.path`` (Hit or PackChunk)."""
     return [describe(db, e) for e in entities_for_query(db, query, hits, limit)]
 
 

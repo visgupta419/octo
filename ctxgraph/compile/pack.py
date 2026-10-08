@@ -42,6 +42,7 @@ class ContextPack:
     candidates: int = 0
     dropped_duplicates: int = 0
     dropped_over_budget: int = 0
+    dropped_file_cap: int = 0
     facts: list[str] = field(default_factory=list)  # milestone 2
     stale_sources: list[str] = field(default_factory=list)  # milestone 5
 
@@ -61,6 +62,7 @@ def compile_pack(
     reserve_ratio: float = DEFAULT_RESERVE_RATIO,
     facts: list[str] | None = None,
     stale_sources: list[str] | None = None,
+    max_chunks_per_file: int = 0,
 ) -> ContextPack:
     pack = ContextPack(query=query, budget_tokens=budget_tokens, candidates=len(hits))
     pack.stale_sources = list(stale_sources or [])
@@ -76,11 +78,15 @@ def compile_pack(
     available = max(0, budget_tokens - reserve)
     pack.used_tokens = facts_tokens
     seen_hashes: set[str] = set()
+    per_file: dict[str, int] = {}
     for h in hits:
         if h.hash in seen_hashes:
             pack.dropped_duplicates += 1
             continue
         seen_hashes.add(h.hash)
+        if max_chunks_per_file and per_file.get(h.path, 0) >= max_chunks_per_file:
+            pack.dropped_file_cap += 1
+            continue
         if pack.used_tokens + h.token_count > available:
             pack.dropped_over_budget += 1
             continue
@@ -101,4 +107,5 @@ def compile_pack(
             )
         )
         pack.used_tokens += h.token_count
+        per_file[h.path] = per_file.get(h.path, 0) + 1
     return pack

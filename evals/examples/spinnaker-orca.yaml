@@ -1,0 +1,127 @@
+# Eval questions for https://github.com/spinnaker/orca (Java/Kotlin/Groovy).
+# Copy to <orca checkout>/evals/questions.yaml and run `ctxgraph eval` there.
+# A bare file name in expect_paths matches any path ending in it.
+version: 1
+budget_tokens: 3000
+
+questions:
+  - id: start-execution
+    q: what starts a pipeline execution when it is triggered
+    expect_paths: [ExecutionLauncher.java]
+    expect_entities: [ExecutionLauncher]
+    tags: [core]
+  - id: persist-sql
+    q: where are pipeline executions persisted in sql
+    expect_paths: [SqlExecutionRepository.kt]
+    expect_entities: [SqlExecutionRepository]
+    tags: [persistence]
+  - id: repo-interface
+    q: what is the interface for storing and retrieving executions
+    expect_paths: [ExecutionRepository.java]
+    expect_entities: [ExecutionRepository]
+    tags: [persistence]
+  - id: run-task
+    q: which handler runs a task and checks its timeout
+    expect_paths: [RunTaskHandler.kt]
+    expect_entities: [RunTaskHandler]
+    tags: [queue]
+  - id: start-stage
+    q: what happens when a stage starts executing
+    expect_paths: [StartStageHandler.kt]
+    expect_entities: [StartStageHandler]
+    tags: [queue]
+  - id: complete-stage
+    q: how is a stage marked complete and the next stage started
+    expect_paths: [CompleteStageHandler.kt]
+    expect_entities: [CompleteStageHandler]
+    tags: [queue]
+  - id: retryable-task
+    q: how does a task declare it can be retried with a backoff period
+    expect_paths: [RetryableTask.java]
+    expect_entities: [RetryableTask]
+    tags: [api]
+  - id: stage-definition
+    q: how do I define a new stage type and the tasks it runs
+    expect_paths: [StageDefinitionBuilder.java]
+    expect_entities: [StageDefinitionBuilder]
+    tags: [api]
+  - id: spel
+    q: how are SpEL expressions in the stage context evaluated
+    expect_paths: [ContextParameterProcessor.java]
+    expect_entities: [ContextParameterProcessor]
+    tags: [core]
+  - id: webhook
+    q: how does the webhook stage call an external HTTP endpoint
+    expect_paths: [CreateWebhookTask.java]
+    expect_entities: [CreateWebhookTask]
+    tags: [stages]
+  - id: bake
+    q: how does orca create a bake request for an image
+    expect_paths: [CreateBakeTask.groovy]
+    expect_entities: [CreateBakeTask]
+    tags: [stages]
+  - id: manual-judgment
+    q: how does manual judgment pause a pipeline for human approval
+    expect_paths: [ManualJudgmentStage.groovy]
+    expect_entities: [ManualJudgmentStage]
+    tags: [stages]
+  - id: queue-sql
+    q: how are queue messages stored, locked and retried in sql
+    expect_paths: [SqlQueue.kt]
+    expect_entities: [SqlQueue]
+    tags: [queue]
+  - id: queue-processor
+    q: what polls the queue and dispatches messages to handlers
+    expect_paths: [QueueProcessor.kt]
+    expect_entities: [QueueProcessor]
+    tags: [queue]
+  - id: kayenta
+    q: how does a canary analysis stage call kayenta
+    expect_paths: [KayentaCanaryStage.kt]
+    expect_entities: [KayentaCanaryStage]
+    tags: [stages]
+  - id: dependent-pipeline
+    q: how does a pipeline trigger another pipeline when it completes
+    expect_paths: [DependentPipelineStarter.groovy]
+    expect_entities: [DependentPipelineStarter]
+    tags: [core]
+  - id: rest-cancel
+    q: which REST endpoint cancels a running execution
+    expect_paths: [TaskController.groovy]
+    expect_entities: [TaskController]
+    tags: [web]
+  - id: orchestrate
+    q: which controller endpoint starts an ad-hoc orchestration
+    expect_paths: [OperationsController.groovy]
+    expect_entities: [OperationsController]
+    tags: [web]
+  - id: pipeline-templates
+    q: how are pipeline templates resolved into a pipeline configuration
+    expect_paths: [PipelineTemplateService.java]
+    expect_entities: [PipelineTemplateService]
+    tags: [templates]
+  - id: time-window
+    q: how are executions restricted to a deployment time window
+    expect_paths: [RestrictExecutionDuringTimeWindow.java]
+    expect_entities: [RestrictExecutionDuringTimeWindow]
+    tags: [core]
+  - id: wait-stage
+    q: how does the wait stage delay a pipeline
+    expect_paths: [WaitTask.java]
+    expect_entities: [WaitTask]
+    tags: [stages]
+  - id: preconditions
+    q: how are preconditions checked before a stage runs
+    expect_paths: [CheckPreconditionsStage.java]
+    expect_entities: [CheckPreconditionsStage]
+    tags: [stages]
+  - id: jenkins
+    q: how does orca monitor a jenkins job until it finishes
+    expect_paths: [MonitorJenkinsJobTask.groovy]
+    expect_entities: [MonitorJenkinsJobTask]
+    tags: [stages]
+  - id: stage-navigator
+    q: how do I find the ancestor stages of a stage
+    expect_paths: [StageNavigator.java]
+    expect_entities: [StageNavigator]
+    tags: [core]
