@@ -24,7 +24,9 @@ class GraphReport:
     by_type: dict[str, int] = field(default_factory=dict)
 
 
-def build_graph(cfg: Config, db: Database) -> GraphReport:
+def build_graph(cfg: Config, db: Database, progress=None) -> GraphReport:
+    """Build the graph from the indexed chunks. ``progress(stage, done, total)``
+    is called between stages so a CLI can show activity."""
     paths = db.chunk_paths()  # path -> source id
     source_types = {s.id: s.type for s in cfg.sources}
     b = GraphBuild()
@@ -33,16 +35,28 @@ def build_graph(cfg: Config, db: Database) -> GraphReport:
         b.add_entity(FILE, path, kind="code" if stype == "code" else "doc" if stype == "markdown" else "text", source=sid)
 
     indexed = sorted(paths)
+    if progress:
+        progress("graph: ownership", 0, 0)
     load_ownership(cfg, b, indexed)
     load_codeowners(cfg, b, indexed)
     load_dependencies(cfg, b)
 
-    code_paths = [p for p, sid in paths.items() if source_types.get(sid) == "code"]
-    texts = extract_structure(cfg.repo_root, b, sorted(code_paths), cfg.chunking.parser)
+    code_paths = sorted(p for p, sid in paths.items() if source_types.get(sid) == "code")
+    if progress:
+        progress("graph: parsing code", 0, len(code_paths))
+    texts = extract_structure(cfg.repo_root, b, code_paths, cfg.chunking.parser, progress=progress)
+    if progress:
+        progress("graph: metadata", 0, 0)
     extract_metadata(cfg.repo_root, b, list_repo_files(cfg.repo_root))
+    if progress:
+        progress("graph: resolving references", 0, 0)
     resolve_references(b, texts)
+    if progress:
+        progress("graph: git history", 0, 0)
     commits = extract_history(cfg, b, set(indexed))
     propagate_owners(b)
+    if progress:
+        progress("graph: writing", 0, 0)
 
     db.clear_graph()
     for ent in b.entities.values():

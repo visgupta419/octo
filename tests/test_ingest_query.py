@@ -192,3 +192,20 @@ def test_pack_per_file_cap(config, db):
     pack = compile_pack("q", dup, 10_000, max_chunks_per_file=2)
     assert sum(1 for c in pack.chunks if c.path == hits[0].path) == 2
     assert pack.dropped_file_cap >= 1
+
+
+def test_oversized_files_are_skipped_and_reported(repo, config, db):
+    from conftest import git, write
+
+    write(repo, "docs/huge.md", "# Huge\n\n" + ("x" * 1024 + "\n") * 600)  # ~600 KB
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "huge")
+    stages = []
+    report = run_ingest(config, db, progress=lambda label, done, total: stages.append(label))
+    docs = next(s for s in report.sources if s.source_id == "docs")
+    assert any(p == "docs/huge.md" and r.startswith("too large") for p, r in docs.skipped)
+    assert "docs/huge.md" not in {r["path"] for r in db.conn.execute("SELECT path FROM chunks")}
+    assert "listing files" in stages and any(s.endswith(": chunking") for s in stages)
+    config.max_file_kb = 2048
+    report = run_ingest(config, db)
+    assert "docs/huge.md" in {r["path"] for r in db.conn.execute("SELECT path FROM chunks")}

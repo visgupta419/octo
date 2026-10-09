@@ -124,9 +124,13 @@ def embed_chunks(
     )
 
 
-def run_ingest(cfg: Config, db: Database, *, full: bool = False) -> IngestReport:
+def run_ingest(cfg: Config, db: Database, *, full: bool = False, progress=None) -> IngestReport:
+    """Index every source. ``progress(stage, done, total)`` reports activity
+    (stage is a short label such as "apex: chunking"); done/total may be 0."""
     head = head_commit(cfg.repo_root)
     report = IngestReport(head_commit=head, full=full)
+    if progress:
+        progress("listing files", 0, 0)
     all_files = list_repo_files(cfg.repo_root)
     claimed: set[str] = set()
 
@@ -141,6 +145,7 @@ def run_ingest(cfg: Config, db: Database, *, full: bool = False) -> IngestReport
         ]
         claimed.update(files)
         sr.files = len(files)
+        max_bytes = cfg.max_file_kb_for(source) * 1024
         db.ensure_source(source.id, source.type, source.bucket, source.to_config_dict())
 
         if full:
@@ -150,13 +155,23 @@ def run_ingest(cfg: Config, db: Database, *, full: bool = False) -> IngestReport
             existing = db.chunk_ids_for_source(source.id)
 
         seen: set[str] = set()
-        for rel in files:
+        for n, rel in enumerate(files, start=1):
             fp = cfg.repo_root / rel
+            if progress and (n % 50 == 0 or n == len(files)):
+                progress(f"{source.id}: chunking", n, len(files))
+            try:
+                st = fp.stat()
+            except OSError as exc:
+                sr.skipped.append((rel, f"unreadable: {exc.strerror or exc}"))
+                continue
+            if max_bytes and st.st_size > max_bytes:
+                sr.skipped.append((rel, f"too large ({st.st_size // 1024} KB > max_file_kb {max_bytes // 1024})"))
+                continue
             text, reason = _read_text(fp)
             if text is None:
                 sr.skipped.append((rel, reason or "unknown"))
                 continue
-            mtime = fp.stat().st_mtime
+            mtime = st.st_mtime
             raw: RawChunk
             for raw in loader(source, rel, text, cfg.chunking):
                 cid = chunk_id(source.id, rel, raw.text)

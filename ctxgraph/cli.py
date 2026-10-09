@@ -105,11 +105,16 @@ def ingest(ctx: click.Context, full: bool, no_embed: bool) -> None:
     with Database(cfg.db_path, on_mismatch="rebuild") as db:
         if db.rebuilt:
             click.echo("index schema changed: rebuilding from scratch")
+        def stage(label: str, done: int, total: int) -> None:
+            text = f"  {label}" + (f" {done}/{total}" if total else "") + " " * 20
+            click.echo("\r" + text, nl=False, err=True)
+
         try:
-            report = run_ingest(cfg, db, full=full)
+            report = run_ingest(cfg, db, full=full, progress=stage)
         except ConfigError as exc:
             raise click.ClickException(str(exc)) from exc
-        graph = build_graph(cfg, db)
+        graph = build_graph(cfg, db, progress=stage)
+        click.echo("\r" + " " * 70 + "\r", nl=False, err=True)
         _print_ingest_summary(cfg, report, graph, full)
         embed_report = None
         if embedder:

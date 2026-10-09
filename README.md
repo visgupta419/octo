@@ -164,7 +164,11 @@ Rules worth knowing:
 - Inside a git repo the file list comes from `git ls-files`, so `.gitignore`
   is honoured. Outside git, the tree is walked and `.git`, `node_modules`,
   `__pycache__` are skipped.
-- Binary files are skipped and reported by `ingest`.
+- Binary files, and files above `max_file_kb` (512 by default; generated
+  or vendored code), are skipped and reported by `ingest`. Salesforce
+  `staticresources` are excluded by default for the same reason.
+- `ingest` prints the chunk and graph summary first, then a progress line
+  while it embeds; Ctrl-C is safe and the next run resumes.
 - Source types: `markdown` (split by heading, breadcrumb kept), `code`
   (split by declaration, language detected from extension), `text` (windowed
   by paragraph).

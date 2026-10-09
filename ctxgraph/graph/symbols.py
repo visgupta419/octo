@@ -61,7 +61,7 @@ def _component_for(path: str) -> str | None:
 
 
 def extract_structure(
-    repo_root: Path, b: GraphBuild, code_paths: list[str], parser: str = "auto"
+    repo_root: Path, b: GraphBuild, code_paths: list[str], parser: str = "auto", progress=None
 ) -> dict[str, tuple[str, str, str, str, ParsedFile | None]]:
     """Add file, symbol, component and trigger-object entities.
 
@@ -70,7 +70,9 @@ def extract_structure(
     name is known.
     """
     texts: dict[str, tuple[str, str, str, str, ParsedFile | None]] = {}
-    for path in code_paths:
+    for n, path in enumerate(code_paths, start=1):
+        if progress and (n % 50 == 0 or n == len(code_paths)):
+            progress("graph: parsing code", n, len(code_paths))
         try:
             text = (repo_root / path).read_text(encoding="utf-8", errors="replace")
         except OSError:

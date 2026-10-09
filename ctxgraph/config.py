@@ -20,7 +20,10 @@ DEFAULT_EXCLUDE = [
     "**/*.min.*",
     "**/*.lock",
     "**/package-lock.json",
+    "**/staticresources/**",  # Salesforce: bundled third-party JS/CSS, never useful context
+    "**/*.resource",
 ]
+DEFAULT_MAX_FILE_KB = 512  # larger files are generated or vendored; skipped and reported
 
 
 class ConfigError(Exception):
@@ -167,6 +170,7 @@ class Source:
     exclude: list[str] | None = None  # None -> use global exclude
     manual: bool = False
     stale_after_days: int | None = None
+    max_file_kb: int | None = None  # None -> global max_file_kb
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_config_dict(self) -> dict[str, Any]:
@@ -193,6 +197,7 @@ class Config:
     sources: list[Source]
     db_path: Path
     budget_tokens_default: int = 4000
+    max_file_kb: int = DEFAULT_MAX_FILE_KB
     exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE))
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
@@ -203,6 +208,9 @@ class Config:
 
     def exclude_for(self, source: Source) -> list[str]:
         return source.exclude if source.exclude is not None else self.exclude
+
+    def max_file_kb_for(self, source: Source) -> int:
+        return source.max_file_kb if source.max_file_kb is not None else self.max_file_kb
 
     @property
     def repo_name(self) -> str:
@@ -240,7 +248,7 @@ def _parse_source(raw: Any, index: int, known_types: set[str] | None) -> Source:
     if not paths:
         raise ConfigError(f"{where}.paths is required")
     exclude = raw.get("exclude")
-    reserved = {"id", "type", "bucket", "paths", "path", "exclude", "manual", "stale_after_days"}
+    reserved = {"id", "type", "bucket", "paths", "path", "exclude", "manual", "stale_after_days", "max_file_kb"}
     extra = {k: v for k, v in raw.items() if k not in reserved}
     stale = raw.get("stale_after_days")
     return Source(
@@ -251,6 +259,7 @@ def _parse_source(raw: Any, index: int, known_types: set[str] | None) -> Source:
         exclude=None if exclude is None else _as_str_list(exclude, f"{where}.exclude"),
         manual=bool(raw.get("manual", False)),
         stale_after_days=None if stale is None else int(stale),
+        max_file_kb=None if raw.get("max_file_kb") is None else int(raw["max_file_kb"]),
         extra=extra,
     )
 
@@ -291,6 +300,7 @@ def parse_config(
         sources=sources,
         db_path=db_path,
         budget_tokens_default=int(data.get("budget_tokens_default", 4000)),
+        max_file_kb=int(data.get("max_file_kb", DEFAULT_MAX_FILE_KB)),
         exclude=list(DEFAULT_EXCLUDE) if exclude is None else _as_str_list(exclude, "exclude"),
         chunking=ChunkingConfig.from_dict(data.get("chunking")),
         graph=GraphConfig.from_dict(data.get("graph")),
@@ -348,6 +358,9 @@ graph:
     max_commits: 1000                 # git log depth for authors and co-change
     cochange_min: 2                   # commits two files must share to be linked
 
+# Files above this size are skipped (generated or vendored; reported by ingest).
+max_file_kb: 512
+
 # Patterns excluded from every source (per-source `exclude` overrides this).
 exclude:
   - ".ctxgraph/**"
@@ -359,6 +372,8 @@ exclude:
   - "**/*.min.*"
   - "**/*.lock"
   - "**/package-lock.json"
+  - "**/staticresources/**"
+  - "**/*.resource"
 
 # A file is claimed by the FIRST source whose paths match it, so list the
 # narrow, high-signal sources before the catch-alls.
