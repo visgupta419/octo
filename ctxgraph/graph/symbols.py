@@ -223,6 +223,8 @@ def resolve_calls(
     caller's own class, else the classes this file references, else the
     whole repo when the name is unique. Anything still ambiguous is skipped.
     """
+    from ..retrieve.bm25 import is_test_path
+
     methods: dict[str, list[tuple[str, str, str]]] = {}  # simple -> [(id, class, path)]
     for e in b.by_type(SYMBOL):
         if e.attrs.get("kind") == "function" and "." in e.name:
@@ -236,6 +238,7 @@ def resolve_calls(
     for path, (language, _masked, _raw, src, parsed) in texts.items():
         if parsed is None:
             continue
+        caller_is_test = is_test_path(path)
         referenced = {b.entities[dst].name.lower() for (s, dst, kind), _ in b.edges.items() if s == src and kind == "references" and dst in b.entities}
         for call in parsed.calls:
             cands = methods.get(call.callee.lower())
@@ -255,7 +258,9 @@ def resolve_calls(
             else:
                 target = pick(cands, referenced)
             if target is None and len(cands) == 1 and (call.receiver is not None or own_class is None):
-                target = cands[0][0]
+                # repo-wide unique name: never link production code to a test method
+                if caller_is_test or not is_test_path(cands[0][2]):
+                    target = cands[0][0]
             if target and target != caller_id:
                 b.add_edge(caller_id, target, "calls", count=1)
         for q in parsed.soql:

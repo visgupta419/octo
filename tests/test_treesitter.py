@@ -181,3 +181,21 @@ class InMemoryQueue(
     p = parse_file(src, "kotlin")
     assert p.attrs["InMemoryQueue"]["implements"] == ["MonitorableQueue", "Closeable"]
     assert "extends" not in p.attrs["InMemoryQueue"]
+
+
+def test_production_calls_never_resolve_to_test_methods(tmp_path: Path):
+    root = tmp_path / "calls"
+    root.mkdir()
+    git(root, "init", "-q")
+    write(root, "src/main/java/com/x/Handler.java", "package com.x;\npublic class Handler {\n  void run() { log.error(\"x\"); Util.go(); }\n}\n")
+    write(root, "src/main/java/com/x/Util.java", "package com.x;\npublic class Util {\n  static void go() {}\n}\n")
+    write(root, "src/test/java/com/x/SomeSpec.java", "package com.x;\npublic class SomeSpec {\n  void error() {}\n}\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    cfg = parse_config({"version": 1, "sources": [{"id": "code", "type": "code", "bucket": "knowledge", "paths": ["**/*.java"]}]}, root / "ctxgraph.yaml")
+    db = Database(cfg.db_path)
+    run_ingest(cfg, db)
+    build_graph(cfg, db)
+    run = db.find_entities("Handler.run", "symbol")[0]
+    calls = {n.name for e, n in db.edges_from(run.id) if e.kind == "calls"}
+    assert calls == {"Util.go"}

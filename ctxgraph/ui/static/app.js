@@ -144,16 +144,17 @@
     if (root) { root.x = cx; root.y = cy; }
     // first hop on a ring, ordered by how referenced they are so big nodes spread out
     const ring1 = nodes.filter((n) => n.depth === 1).sort((a, b) => b.indeg - a.indeg);
-    const r1 = Math.min(W, H) * 0.3;
-    ring1.forEach((n, i) => { n.angle = (i / Math.max(ring1.length, 1)) * 2 * Math.PI - Math.PI / 2; n.x = cx + Math.cos(n.angle) * r1; n.y = cy + Math.sin(n.angle) * r1; });
+    // rings are ellipses so a wide canvas is used fully
+    const rx1 = W * 0.26, ry1 = H * 0.3;
+    ring1.forEach((n, i) => { n.angle = (i / Math.max(ring1.length, 1)) * 2 * Math.PI - Math.PI / 2; n.x = cx + Math.cos(n.angle) * rx1; n.y = cy + Math.sin(n.angle) * ry1; });
     // second hop fans out from its parent on an outer ring
-    const r2 = Math.min(W, H) * 0.46;
+    const rx2 = W * 0.42, ry2 = H * 0.46;
     const kids = {};
     nodes.filter((n) => n.depth === 2).forEach((n) => { (kids[n.parent] = kids[n.parent] || []).push(n); });
     for (const [pid, list] of Object.entries(kids)) {
       const p = byId[pid]; if (!p) continue;
       const spread = Math.min(0.9, 0.22 * list.length);
-      list.forEach((n, i) => { const a = (p.angle ?? 0) + (list.length > 1 ? (i / (list.length - 1) - 0.5) * spread : 0); n.angle = a; n.x = cx + Math.cos(a) * r2 * 1.15; n.y = cy + Math.sin(a) * r2 * 0.95; });
+      list.forEach((n, i) => { const a = (p.angle ?? 0) + (list.length > 1 ? (i / (list.length - 1) - 0.5) * spread : 0); n.angle = a; n.x = cx + Math.cos(a) * rx2; n.y = cy + Math.sin(a) * ry2; });
     }
     // a few relaxation passes so nothing sits on top of anything else
     for (let it = 0; it < 60; it++) {
@@ -173,7 +174,12 @@
       return `<text x="${(n.x + (left ? -1 : 1) * (r(n) + 4)).toFixed(1)}" y="${(n.y + 4).toFixed(1)}" text-anchor="${left ? "end" : "start"}">${esc(short(n))}</text>`;
     };
     const labelled = new Set(nodes.filter((n) => n.depth <= 1).map((n) => n.id));
-    nodes.filter((n) => n.depth === 2).sort((a, b) => b.indeg - a.indeg).slice(0, 12).forEach((n) => labelled.add(n.id));
+    // label second-hop nodes only where there is room: the most referenced, none closer than 18px vertically to a labelled neighbour
+    const placed = nodes.filter((n) => n.depth <= 1);
+    nodes.filter((n) => n.depth === 2).sort((a, b) => b.indeg - a.indeg).forEach((n) => {
+      const side = Math.cos(n.angle ?? 0) < -0.1 ? -1 : 1;
+      if (!placed.some((m) => Math.abs(m.y - n.y) < 18 && Math.abs(m.x - n.x) < 220 && (Math.cos(m.angle ?? 0) < -0.1 ? -1 : 1) === side)) { labelled.add(n.id); placed.push(n); }
+    });
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     svg.innerHTML = edges.map((e) => `<line class="${esc(e.kind)}" x1="${byId[e.src].x.toFixed(1)}" y1="${byId[e.src].y.toFixed(1)}" x2="${byId[e.dst].x.toFixed(1)}" y2="${byId[e.dst].y.toFixed(1)}"><title>${esc(byId[e.src].name)} ${esc(e.kind)} ${esc(byId[e.dst].name)}</title></line>`).join("")
       + nodes.map((n) => `<g><circle class="${n.id === g.root ? "root" : ""}" cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${r(n)}" fill="var(--t-${esc(n.type)})" data-id="${esc(n.id)}"><title>${esc(n.type)}: ${esc(n.name)}${n.kind ? " (" + esc(n.kind) + ")" : ""} · ${n.indeg} incoming</title></circle>${labelled.has(n.id) ? label(n) : ""}</g>`).join("");
