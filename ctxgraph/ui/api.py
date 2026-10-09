@@ -349,7 +349,7 @@ class Api:
             for h in result.hits
         ]
         if not body.get("no_log"):
-            self.db.log_query(text, {"buckets": filters.buckets, "sources": filters.sources, "paths": filters.path_prefixes, "ui": True},
+            self.db.log_query(text, {"buckets": filters.buckets, "sources": filters.sources, "paths": filters.path_prefixes, "client": body.get("client", "ui")},
                               result.mode, len(result.hits), len(pack.chunks), pack.used_tokens, pack.budget_tokens, pack.dropped_over_budget,
                               [h.source_id for h in result.hits], total_ms)
         return {
@@ -359,6 +359,18 @@ class Api:
             "knobs": {"budget": budget, "max_chunks_per_file": cap, "test_path_penalty": self.cfg.retrieval.test_path_penalty,
                       "importance_boost": self.cfg.retrieval.importance_boost, "reserve_ratio": 0.1},
         }
+
+    def search(self, text: str, limit: int = 10, buckets: list[str] | None = None, paths: list[str] | None = None, retriever: str = "auto") -> list[dict[str, Any]]:
+        """Ranked chunk references with the full retrieval pipeline (no pack)."""
+        filters = QueryFilters(buckets=list(buckets or []), path_prefixes=list(paths or []))
+        opts = SearchOptions(
+            limit=max(limit, 20), test_penalty=self.cfg.retrieval.test_path_penalty, importance_boost=self.cfg.retrieval.importance_boost,
+            embedder=self.embedder() if retriever != "bm25" else None, near_duplicate_cosine=self.cfg.retrieval.near_duplicate_cosine,
+            rrf_k=self.cfg.retrieval.rrf_k, retriever=retriever,
+        )
+        result = search_detailed(self.db, text, filters, opts)
+        return [{"id": h.id, "path": h.path, "start_line": h.start_line, "end_line": h.end_line, "tokens": h.token_count,
+                 "heading": h.heading, "score": round(h.score, 4), "bucket": h.bucket} for h in result.hits[:limit]]
 
     def query_log(self, limit: int = 50) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.conn.execute("SELECT * FROM query_log ORDER BY id DESC LIMIT ?", (limit,))]

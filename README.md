@@ -14,22 +14,22 @@ and metadata sources out of the box.
 
 ## Status
 
-Milestones 1 to 5 of the [design](docs/DESIGN.md) are done: config loader,
+Milestones 1 to 5 and 7 of the [design](docs/DESIGN.md) are done: config loader,
 SQLite schema, markdown and code ingest (tree-sitter where available,
 heuristic splitter otherwise), hybrid retrieval (BM25 fused with local
 embeddings, optional cross-encoder rerank, near-duplicate dedupe),
 token-budgeted packs with a graph-derived Facts block, the context graph
 (ownership, code structure with method-level call edges, Salesforce
 metadata down to validation rules and permission sets, git history), a
-query log with anti-pattern stats, an eval harness with a grep baseline,
-and the `init` / `ingest` / `query` / `graph` / `stats` / `eval` commands.
-Freshness tracking, compiled `context/` pages and the MCP server are later
-milestones.
+query log with anti-pattern stats, an eval harness with a grep baseline, a
+local web UI, an MCP server for coding agents, and the `init` / `ingest` /
+`query` / `graph` / `stats` / `eval` / `ui` / `serve` commands. Freshness
+tracking and compiled `context/` pages are what remains.
 
 ## Quickstart
 
 ```bash
-pip install -e ".[embed,parse]"   # Python 3.11+; embed = fastembed (ONNX), parse = tree-sitter grammars
+pip install -e ".[all]"           # Python 3.11+; extras: embed (fastembed), parse (tree-sitter), mcp (agent server)
 cd /path/to/your/repo
 ctxgraph init               # writes ctxgraph.yaml and a self-ignoring .ctxgraph/
 ctxgraph ingest             # builds .ctxgraph/index.db, graph and vectors (incremental)
@@ -40,7 +40,38 @@ ctxgraph graph Account -t object
 ctxgraph stats                        # context anti-patterns from the query log
 ctxgraph eval --fail-under 0.7        # score packs against evals/questions.yaml
 ctxgraph ui                           # local web UI: what is stored, and how a pack is built
+ctxgraph serve --print-config claude  # the command to register the MCP server with Claude Code
 ```
+
+## Giving it to an agent
+
+`ctxgraph serve` exposes the index over the Model Context Protocol (stdio)
+with four terse tools, because every schema token is re-sent on every turn:
+
+| Tool | Returns |
+| --- | --- |
+| `get_context(query, budget_tokens?, buckets?, paths?, retriever?)` | the pack as markdown: facts first, then chunks with `path#line` citations |
+| `search(query, limit?, buckets?, paths?)` | one line per hit: chunk id, `path#lines`, heading, tokens; no text |
+| `get_entity(name, type?)` | fact line plus incoming and outgoing edges for a class, method, object, field, flow, service, team, person or file path |
+| `get_chunk(chunk_id)` | one chunk's text with its citation |
+
+Register it:
+
+```bash
+# Claude Code (prints a `claude mcp add ...` command with absolute paths; run it)
+ctxgraph serve --print-config claude
+
+# Cursor, Windsurf, VS Code and others: paste into .cursor/mcp.json or the client's MCP settings
+ctxgraph serve --print-config cursor
+
+# A paragraph for CLAUDE.md / AGENTS.md so the agent reaches for the tools first
+ctxgraph serve --print-instructions >> CLAUDE.md
+```
+
+Every call is logged like a CLI query, so `ctxgraph stats` and the UI's Log
+view show what agents actually asked. The server reads the index built by
+`ingest`; re-run `ingest` to refresh it (the server picks up the new data
+without a restart).
 
 A pack looks like this:
 
@@ -297,6 +328,7 @@ ctxgraph/
   compile/         pack.py (budget, facts, dedupe), render.py (markdown/json)
   stats.py         query-log anti-patterns
   ui/              api.py (JSON views), server.py (stdlib HTTP), static/ (page)
+  mcp/             server.py (FastMCP tools over the same api)
   cli.py
 docs/DESIGN.md     the v0.1 design and milestone plan
 ```

@@ -326,9 +326,6 @@ def stats(ctx: click.Context, as_json: bool) -> None:
     click.echo(json.dumps(s.to_dict(), indent=2) if as_json else render_stats(s))
 
 
-if __name__ == "__main__":  # pragma: no cover
-    main()
-
 
 @main.command("eval")
 @click.option("-q", "--questions", "questions_path", type=click.Path(path_type=Path), default=None,
@@ -388,3 +385,36 @@ def ui(ctx: click.Context, host: str, port: int, no_open: bool) -> None:
     except SchemaMismatch as exc:
         raise click.ClickException(str(exc)) from exc
     serve(cfg, host, port, open_browser=not no_open)
+
+
+@main.command()
+@click.option("--print-config", type=click.Choice(["claude", "cursor", "json"]), default=None,
+              help="Print the client configuration instead of serving (claude: a `claude mcp add` command; cursor/json: mcpServers JSON).")
+@click.option("--print-instructions", is_flag=True, help="Print a CLAUDE.md / AGENTS.md snippet telling agents to use the tools.")
+@click.pass_context
+def serve(ctx: click.Context, print_config: str | None, print_instructions: bool) -> None:
+    """Serve the index to coding agents over MCP (stdio)."""
+    from .mcp.server import AGENT_SNIPPET, build_server, client_config
+
+    cfg = _load(ctx)
+    if print_instructions:
+        click.echo(AGENT_SNIPPET)
+        return
+    if print_config:
+        click.echo(client_config(cfg, print_config))
+        return
+    if not cfg.db_path.exists():
+        raise click.ClickException(f"no index at {cfg.db_path}; run `ctxgraph ingest` first")
+    try:
+        Database(cfg.db_path).close()
+    except SchemaMismatch as exc:
+        raise click.ClickException(str(exc)) from exc
+    try:
+        server = build_server(cfg)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    server.run("stdio")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
