@@ -53,7 +53,7 @@ def build_server(cfg: Config):
 
     db = Database(cfg.db_path, check_same_thread=False)
     api = Api(cfg, db)
-    mcp = FastMCP("ctxgraph", instructions=INSTRUCTIONS)
+    mcp = FastMCP("ctxgraph", instructions=INSTRUCTIONS, log_level="WARNING")
 
     @mcp.tool()
     def get_context(
