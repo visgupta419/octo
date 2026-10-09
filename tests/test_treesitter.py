@@ -166,3 +166,18 @@ def test_salesforce_metadata_rules_permsets_layouts_flows(tmp_path: Path):
     assert "validation rules: Segment_Required" in acct and "record types: Partner" in acct and "layouts: Account-Account Layout" in acct
     fld = describe(db, db.find_entities("Account.Industry_Segment__c", "field")[0])
     assert "on layouts:" in fld and "permission sets: Sales_User" in fld
+
+
+def test_kotlin_heritage_with_function_type_parameters():
+    src = """\
+class InMemoryQueue(
+  private val clock: Clock,
+  override val deadMessageHandlers: List<(Queue, Message) -> Unit>,
+  override val publisher: EventPublisher
+) : MonitorableQueue, Closeable {
+  override fun poll(callback: (Message, () -> Unit) -> Unit) {}
+}
+"""
+    p = parse_file(src, "kotlin")
+    assert p.attrs["InMemoryQueue"]["implements"] == ["MonitorableQueue", "Closeable"]
+    assert "extends" not in p.attrs["InMemoryQueue"]

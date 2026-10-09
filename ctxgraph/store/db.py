@@ -63,7 +63,7 @@ def utcnow_iso() -> str:
 
 
 class Database:
-    def __init__(self, path: Path | str, *, on_mismatch: str = "error"):
+    def __init__(self, path: Path | str, *, on_mismatch: str = "error", check_same_thread: bool = True):
         """Open (and create) the index.
 
         ``on_mismatch`` is "error" (raise SchemaMismatch) or "rebuild" (delete
@@ -71,6 +71,7 @@ class Database:
         """
         self.path = Path(path)
         self.rebuilt = False
+        self._check_same_thread = check_same_thread
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = self._connect()
@@ -91,7 +92,7 @@ class Database:
     # -- lifecycle ---------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path))
+        conn = sqlite3.connect(str(self.path), check_same_thread=self._check_same_thread)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")

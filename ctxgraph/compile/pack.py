@@ -63,7 +63,10 @@ def compile_pack(
     facts: list[str] | None = None,
     stale_sources: list[str] | None = None,
     max_chunks_per_file: int = 0,
+    trace: list[tuple[str, str]] | None = None,
 ) -> ContextPack:
+    """Compile hits into a pack. ``trace`` (if given) receives (chunk id,
+    decision) for every hit: included, duplicate, file_cap or over_budget."""
     pack = ContextPack(query=query, budget_tokens=budget_tokens, candidates=len(hits))
     pack.stale_sources = list(stale_sources or [])
     # Facts come first and never take more than 40% of the budget.
@@ -82,14 +85,22 @@ def compile_pack(
     for h in hits:
         if h.hash in seen_hashes:
             pack.dropped_duplicates += 1
+            if trace is not None:
+                trace.append((h.id, "duplicate"))
             continue
         seen_hashes.add(h.hash)
         if max_chunks_per_file and per_file.get(h.path, 0) >= max_chunks_per_file:
             pack.dropped_file_cap += 1
+            if trace is not None:
+                trace.append((h.id, "file_cap"))
             continue
         if pack.used_tokens + h.token_count > available:
             pack.dropped_over_budget += 1
+            if trace is not None:
+                trace.append((h.id, "over_budget"))
             continue
+        if trace is not None:
+            trace.append((h.id, "included"))
         pack.chunks.append(
             PackChunk(
                 id=h.id,

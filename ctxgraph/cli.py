@@ -348,3 +348,22 @@ def eval_cmd(
     click.echo(json.dumps(report.to_dict(), indent=2) if as_json else render_report(report))
     if fail_under is not None and (report.path_recall or 0.0) < fail_under:
         raise click.exceptions.Exit(1)
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", type=int, default=7337, show_default=True)
+@click.option("--no-open", is_flag=True, help="Do not open a browser tab.")
+@click.pass_context
+def ui(ctx: click.Context, host: str, port: int, no_open: bool) -> None:
+    """Open a local web UI showing what is indexed and how packs are built."""
+    from .ui.server import serve
+
+    cfg = _load(ctx)
+    if not cfg.db_path.exists():
+        raise click.ClickException(f"no index at {cfg.db_path}; run `ctxgraph ingest` first")
+    try:
+        Database(cfg.db_path).close()
+    except SchemaMismatch as exc:
+        raise click.ClickException(str(exc)) from exc
+    serve(cfg, host, port, open_browser=not no_open)

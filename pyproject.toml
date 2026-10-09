@@ -28,6 +28,7 @@ include = ["ctxgraph*"]
 
 [tool.setuptools.package-data]
 "ctxgraph.store" = ["schema.sql"]
+"ctxgraph.ui" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

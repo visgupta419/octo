@@ -173,11 +173,12 @@ def _split_types(text: str) -> list[str]:
     out: list[str] = []
     depth = 0
     cur = ""
-    for ch in text:
+    for i, ch in enumerate(text):
         if ch in "<([":
             depth += 1
         elif ch in ">)]":
-            depth -= 1
+            if not (ch == ">" and i > 0 and text[i - 1] == "-"):
+                depth -= 1
         elif ch == "," and depth == 0:
             out.append(cur)
             cur = ""
@@ -208,6 +209,8 @@ def _heritage(node, language: str, src: bytes) -> tuple[list[str], str | None]:
             if ch in "<([":
                 depth += 1
             elif ch in ">)]":
+                if ch == ">" and i > 0 and head[i - 1] == "-":
+                    continue  # `->` in a function type is not a closing generic
                 depth -= 1
             elif ch == ":" and depth == 0:
                 colon = i
@@ -247,10 +250,10 @@ def _split_types_raw(text: str) -> list[str]:
     parts: list[str] = []
     depth = 0
     cur = ""
-    for ch in text:
+    for i, ch in enumerate(text):
         if ch in "<([":
             depth += 1
-        elif ch in ">)]":
+        elif ch in ">)]" and not (ch == ">" and i > 0 and text[i - 1] == "-"):
             depth -= 1
         if ch == "{" and depth == 0:
             break

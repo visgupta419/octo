@@ -39,6 +39,7 @@ ctxgraph graph AccountService         # describe a class, object, service, file.
 ctxgraph graph Account -t object
 ctxgraph stats                        # context anti-patterns from the query log
 ctxgraph eval --fail-under 0.7        # score packs against evals/questions.yaml
+ctxgraph ui                           # local web UI: what is stored, and how a pack is built
 ```
 
 A pack looks like this:
@@ -63,6 +64,29 @@ Every chunk cites its path, line range and the commit it was indexed at.
 Facts come first and are built from the graph, never from a model. Sections
 then appear in the order norms, expertise, knowledge; within a section
 chunks keep retrieval rank order.
+
+## Seeing what is stored
+
+`ctxgraph ui` serves a local, read-only web page over the index (standard
+library only, nothing to install, opens in your browser):
+
+- **Overview**: the pipeline with live numbers (sources → chunks → graph →
+  vectors → queries), every source with the files, chunks and tokens it
+  produced and the commit it was ingested at, chunk sizes by language and
+  kind, the retrieval knobs in force, and the anti-pattern findings.
+- **Entities**: browse or search by type, sorted by how much the codebase
+  leans on each one. An entity page shows its fact line, an interactive
+  two-hop neighbourhood graph (semantic edges only; members and
+  declarations are listed beneath), every edge in and out, the chunks that
+  carry it and the docs that mention it.
+- **Files**: every indexed file, and a file page that paints the chunk
+  boundaries over the source so you can judge where the splitter cut, with
+  the declarations found in it.
+- **Query**: ask what an agent would ask. Left, the pack exactly as served
+  (facts, chunks, the markdown). Right, every candidate retrieval produced
+  with the compiler's decision: in pack, cut by budget, cut by the per-file
+  cap, duplicate. Retriever, rerank, budget and bucket are switches.
+- **Log**: the recent queries with match mode, candidates and tokens.
 
 ## The context graph
 
@@ -268,6 +292,7 @@ ctxgraph/
   evals/           question loading, runner, grep baseline, report
   compile/         pack.py (budget, facts, dedupe), render.py (markdown/json)
   stats.py         query-log anti-patterns
+  ui/              api.py (JSON views), server.py (stdlib HTTP), static/ (page)
   cli.py
 docs/DESIGN.md     the v0.1 design and milestone plan
 ```
