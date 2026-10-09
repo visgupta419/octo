@@ -110,8 +110,32 @@ def ingest(ctx: click.Context, full: bool, no_embed: bool) -> None:
         except ConfigError as exc:
             raise click.ClickException(str(exc)) from exc
         graph = build_graph(cfg, db)
-        embed_report = embed_chunks(cfg, db, embedder) if embedder else None
+        _print_ingest_summary(cfg, report, graph, full)
+        embed_report = None
+        if embedder:
+            pending = len(db.chunks_missing_embeddings(embedder.name))
+            if pending:
+                click.echo(f"embedding {pending} chunks with {embedder.name} (Ctrl-C is safe: resumes next run)")
 
+            def progress(done: int, total: int, secs: float) -> None:
+                rate = done / secs if secs else 0.0
+                left = (total - done) / rate if rate else 0.0
+                click.echo(f"\r  {done}/{total} chunks · {rate:.1f}/s · ~{left / 60:.0f} min left   ", nl=False, err=True)
+
+            embed_report = embed_chunks(cfg, db, embedder, progress=progress)
+            if pending:
+                click.echo("", err=True)
+    if embed_report:
+        extra = f", dropped {embed_report.dropped_other_model} from another model" if embed_report.dropped_other_model else ""
+        click.echo(
+            f"embeddings: +{embed_report.embedded} with {embed_report.model} in {embed_report.seconds}s "
+            f"({embed_report.total} total{extra})"
+        )
+    elif cfg.embedding.provider == "none":
+        click.echo("embeddings: off (set embedding.provider in ctxgraph.yaml for hybrid retrieval)")
+
+
+def _print_ingest_summary(cfg: Config, report, graph, full: bool) -> None:
     head = (report.head_commit or "no commit")[:12]
     mode = "full rebuild" if full else "incremental"
     click.echo(f"ingest ({mode}) at {head} -> {cfg.db_path}")
@@ -135,14 +159,6 @@ def ingest(ctx: click.Context, full: bool, no_embed: bool) -> None:
         f"graph: {graph.entities} entities ({types}), {graph.edges} edges, "
         f"{graph.mentions} doc mentions, {graph.commits} commits read"
     )
-    if embed_report:
-        extra = f", dropped {embed_report.dropped_other_model} from another model" if embed_report.dropped_other_model else ""
-        click.echo(
-            f"embeddings: +{embed_report.embedded} with {embed_report.model} in {embed_report.seconds}s "
-            f"({embed_report.total} total{extra})"
-        )
-    elif cfg.embedding.provider == "none":
-        click.echo("embeddings: off (set embedding.provider in ctxgraph.yaml for hybrid retrieval)")
 
 
 def _embedder(cfg: Config):

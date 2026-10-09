@@ -92,8 +92,15 @@ class EmbedReport:
     dropped_other_model: int = 0
 
 
-def embed_chunks(cfg: Config, db: Database, embedder, *, batch_size: int | None = None) -> EmbedReport:
-    """Embed chunks that have no vector for ``embedder.name`` (incremental)."""
+def embed_chunks(
+    cfg: Config, db: Database, embedder, *, batch_size: int | None = None, progress=None
+) -> EmbedReport:
+    """Embed chunks that have no vector for ``embedder.name`` (incremental).
+
+    ``progress(done, total, seconds)`` is called after every batch, so a CLI
+    can show that a long run is alive. Vectors are committed per batch, so
+    an interrupted run resumes where it stopped.
+    """
     import time
 
     from ..retrieve.embed import to_blob
@@ -109,6 +116,8 @@ def embed_chunks(cfg: Config, db: Database, embedder, *, batch_size: int | None 
         db.upsert_embeddings((cid, to_blob(v), embedder.name) for (cid, _), v in zip(batch, vectors))
         db.commit()
         done += len(batch)
+        if progress is not None:
+            progress(done, len(pending), time.monotonic() - started)
     return EmbedReport(
         model=embedder.name, embedded=done, total=db.embedding_count(embedder.name),
         seconds=round(time.monotonic() - started, 1), dropped_other_model=dropped,
